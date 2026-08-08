@@ -573,6 +573,10 @@ impl<'t> EventLoop<'t> {
             UiAction::Flash(msg) => {
                 self.focused_app().flash(msg);
             }
+            UiAction::OpenModelPicker => {
+                self.focused_app().open_model_picker();
+                self.refresh_models();
+            }
             UiAction::OpenEditor { path, reply_tx } => {
                 let code = self.open_editor(self.focused, &path);
                 let _ = reply_tx.send(code);

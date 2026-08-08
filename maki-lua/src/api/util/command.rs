@@ -429,6 +429,7 @@ pub enum UiAction {
         path: PathBuf,
         reply_tx: flume::Sender<i32>,
     },
+    OpenModelPicker,
     Session {
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,

@@ -4147,6 +4147,23 @@ maki.ui.flash("Copied to clipboard!")
 
 ---
 
+### `maki.ui.open_model_picker()` {#maki-ui-open_model_picker}
+
+```lua
+maki.ui.open_model_picker()
+```
+
+Opens the built-in model picker and refreshes the available models.
+The picker belongs to the currently focused app.
+
+**Example:**
+
+```lua
+maki.ui.open_model_picker()
+```
+
+---
+
 ### `maki.ui.open_editor()` {#maki-ui-open_editor}
 
 ```lua

@@ -304,6 +304,10 @@ impl App {
         self.model_picker.set_recents(recents);
     }
 
+    pub(crate) fn open_model_picker(&mut self) {
+        self.model_picker.open(&self.state.model.spec());
+    }
+
     pub(crate) fn flash(&mut self, msg: String) {
         self.status_bar.flash(msg);
     }
@@ -1235,7 +1239,7 @@ impl App {
                 vec![]
             }
             "/model" => {
-                self.model_picker.open(&self.state.model.spec());
+                self.open_model_picker();
                 vec![Action::RefreshModels]
             }
             "/theme" => {

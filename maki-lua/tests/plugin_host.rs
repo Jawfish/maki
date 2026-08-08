@@ -2522,6 +2522,19 @@ fn command_handler_receives_args_and_fargs(args: &str, expected_flash: &str) {
     assert!(matches!(action, maki_lua::UiAction::Flash(msg) if msg == expected_flash));
 }
 
+#[test]
+fn open_model_picker_sends_ui_action() {
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    host.load_source("p", "maki.ui.open_model_picker()")
+        .unwrap();
+
+    let action = host
+        .ui_action_rx()
+        .recv_timeout(Duration::from_secs(5))
+        .expect("model picker action was not sent");
+    assert!(matches!(action, maki_lua::UiAction::OpenModelPicker));
+}
+
 #[test_case::test_case(
     r#"maki.api.register_command({ name = "", handler = function() end })"#,
     "non-empty" ; "empty_name"

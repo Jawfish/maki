@@ -2520,6 +2520,16 @@ fn mcp_command_opens_picker() {
 }
 
 #[test]
+fn model_command_opens_picker_and_refreshes_models() {
+    let mut app = test_app();
+
+    let actions = app.execute_command(cmd("/model"));
+
+    assert!(app.model_picker.is_open());
+    assert!(matches!(&actions[..], [Action::RefreshModels]));
+}
+
+#[test]
 fn mcp_toggle_dispatches_action() {
     let mut app = test_app();
     app.mcp_picker = McpPicker::new(
