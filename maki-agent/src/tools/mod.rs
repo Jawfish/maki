@@ -807,7 +807,7 @@ mod tests {
         fs::create_dir_all(root.join(".git/objects")).unwrap();
         fs::write(root.join(".git/config"), "stuff").unwrap();
         fs::write(root.join(".git/objects/abc123"), "blob").unwrap();
-        fs::write(root.join(".env"), "SECRET=42").unwrap();
+        fs::write(root.join(".dotfile"), "dotfile").unwrap();
         fs::write(root.join("lib.rs"), "pub fn foo() {}").unwrap();
         fs::write(root.join("main.py"), "print('hi')").unwrap();
 
@@ -830,7 +830,7 @@ mod tests {
 
         let all = collect(&[]);
         assert!(all.contains(&"lib.rs".into()));
-        assert!(all.contains(&".env".into()), "dotfiles must be shown");
+        assert!(all.contains(&".dotfile".into()), "dotfiles must be shown");
         assert!(
             !all.iter().any(|p| p.starts_with(".git")),
             ".git must be excluded"
