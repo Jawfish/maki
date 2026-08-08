@@ -14,9 +14,13 @@ const DEFAULT_MAX_VERSIONS_PER_PATH: usize = 8;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const STALE_WINDOW_RADIUS: usize = 3;
 const NO_OP_LOOP_LIMIT: usize = 3;
-const REMAP_WARNING: &str = "warning: stale line anchors remapped to unchanged current lines; verify the diff matches your intent";
+const REMAP_WARNING_PREFIX: &str = "warning: stale line anchors remapped";
+const VALIDATED_ANCHORS_WARNING_PREFIX: &str =
+    "warning: stale file drift detected; line anchors validated unchanged";
+const VERIFY_DIFF_GUIDANCE: &str = "verify the diff matches your intent";
 const STABLE_DRIFT_WARNING: &str =
     "warning: stale file drift detected; head/tail-only inserts remain position-stable";
+const INVALID_TAG_ERROR: &str = "invalid revision tag: expected exactly 16 lowercase ASCII hex characters; use a tag from read or the previous edit result";
 
 pub type ContentTag = String;
 
@@ -62,7 +66,7 @@ pub struct EditResult {
     pub before: Arc<str>,
     pub after: Arc<str>,
     pub snapshot: Snapshot,
-    pub warning: Option<&'static str>,
+    pub warning: Option<String>,
 }
 
 pub struct EditSection<'a> {
@@ -77,7 +81,7 @@ struct PreflightEdit {
     before: String,
     after: String,
     format: TextFormat,
-    warning: Option<&'static str>,
+    warning: Option<String>,
 }
 
 #[derive(Debug)]
@@ -199,6 +203,18 @@ impl HashlineState {
             .map(|stored| stored.snapshot.clone())
     }
 
+    pub(crate) fn has_two_prior_no_ops(&self, path: &Path, tag: &str, patch: &str) -> bool {
+        self.no_op_attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&canonical_path(path))
+            .is_some_and(|attempt| {
+                attempt.tag == tag
+                    && attempt.patch == patch
+                    && attempt.count >= NO_OP_LOOP_LIMIT - 1
+            })
+    }
+
     pub async fn lock_path(&self, path: &Path) -> MutexGuardArc<()> {
         let path = canonical_path(path);
         let lock = self
@@ -224,6 +240,16 @@ impl HashlineState {
         if sections.is_empty() {
             return Err("edit requires at least one section".into());
         }
+        for (index, section) in sections.iter().enumerate() {
+            validate_tag(section.tag).map_err(|error| {
+                let path = canonical_path(section.path);
+                if sections.len() == 1 {
+                    format!("{}: {error}", path.display())
+                } else {
+                    format!("section {} ({}): {error}", index + 1, path.display())
+                }
+            })?;
+        }
         let mut ordered_paths = sections
             .iter()
             .map(|section| canonical_path(section.path))
@@ -245,8 +271,16 @@ impl HashlineState {
         }
 
         let mut preflight = Vec::with_capacity(sections.len());
-        for section in sections {
-            preflight.push(self.preflight(section)?);
+        for (index, section) in sections.iter().enumerate() {
+            let path = canonical_path(section.path);
+            let edit = self.preflight(section).map_err(|error| {
+                if sections.len() == 1 {
+                    format!("{}: {error}", path.display())
+                } else {
+                    format!("section {} ({}): {error}", index + 1, path.display())
+                }
+            })?;
+            preflight.push(edit);
         }
 
         let writer = Arc::clone(&self.writer);
@@ -302,16 +336,12 @@ impl HashlineState {
     }
 
     fn preflight(&self, section: &EditSection<'_>) -> Result<PreflightEdit, String> {
+        let path = canonical_path(section.path);
         let edits = parse_patch(section.patch).map_err(|error| error.to_string())?;
-        let snapshot = self.get(section.path, section.tag);
-        let before_bytes =
-            fs::read(section.path).map_err(|error| format!("read error: {error}"))?;
-        let current = String::from_utf8(before_bytes.clone()).map_err(|_| {
-            format!(
-                "non-utf8 content: {}; re-read cannot proceed",
-                section.path.display()
-            )
-        })?;
+        let snapshot = self.get(&path, section.tag);
+        let before_bytes = fs::read(&path).map_err(|error| format!("read error: {error}"))?;
+        let current = String::from_utf8(before_bytes.clone())
+            .map_err(|_| "non-utf8 content; re-read cannot proceed".to_owned())?;
         let (before, format) = normalize(&current);
         let current_tag = content_tag(&before);
         let is_stale = snapshot.as_ref().is_none_or(|snapshot| {
@@ -320,15 +350,17 @@ impl HashlineState {
         let (edits, warning) = if is_stale {
             let remapped = snapshot
                 .as_ref()
-                .and_then(|snapshot| remap_edits(&snapshot.content, &before, &edits));
-            let Some((edits, warning)) = remapped else {
-                self.record_normalized(section.path, before.clone(), format);
+                .map(|snapshot| remap_edits(&snapshot.content, &before, &edits));
+            let Some(Ok((edits, warning))) = remapped else {
+                let rejection = remapped.and_then(Result::err);
+                self.record_normalized(&path, before.clone(), format);
                 return Err(stale_error(
-                    section.path,
                     section.tag,
                     &current_tag,
                     &before,
                     &edits,
+                    snapshot.is_some(),
+                    rejection,
                 ));
             };
             (edits, Some(warning))
@@ -337,10 +369,10 @@ impl HashlineState {
         };
         let after = apply_patch(&before, &edits).map_err(|error| error.to_string())?;
         if after == before {
-            return Err(self.no_op_error(section.path, section.tag, section.patch));
+            return Err(self.no_op_error(&path, section.tag, section.patch));
         }
         Ok(PreflightEdit {
-            path: section.path.to_path_buf(),
+            path,
             before_bytes,
             before,
             after,
@@ -386,11 +418,13 @@ impl HashlineState {
             .no_op_attempts
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let attempt = attempts.entry(path_key).or_insert_with(|| NoOpAttempt {
-            tag: tag.to_owned(),
-            patch: patch.to_owned(),
-            count: 0,
-        });
+        let attempt = attempts
+            .entry(path_key.clone())
+            .or_insert_with(|| NoOpAttempt {
+                tag: tag.to_owned(),
+                patch: patch.to_owned(),
+                count: 0,
+            });
         if attempt.tag == tag && attempt.patch == patch {
             attempt.count += 1;
         } else {
@@ -403,12 +437,12 @@ impl HashlineState {
         if attempt.count >= NO_OP_LOOP_LIMIT {
             format!(
                 "hard failure: no-op edit loop for {}: the same payload made no changes {NO_OP_LOOP_LIMIT} times; stop retrying it and inspect the current file",
-                path.display()
+                path_key.display()
             )
         } else {
             format!(
                 "patch makes no changes to {} (identical no-op attempt {}/{}); do not retry this payload: use a different patch or inspect the current file",
-                path.display(),
+                path_key.display(),
                 attempt.count,
                 NO_OP_LOOP_LIMIT
             )
@@ -444,25 +478,51 @@ impl HashlineState {
     }
 }
 
-fn remap_edits(previous: &str, current: &str, edits: &[Edit]) -> Option<(Vec<Edit>, &'static str)> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemapRejection {
+    AmbiguousOrChangedContext,
+    NonUniformOffsets,
+}
+
+impl RemapRejection {
+    fn message(self) -> &'static str {
+        match self {
+            Self::AmbiguousOrChangedContext => {
+                "automatic remap rejected: anchor ambiguity or changed surrounding context"
+            }
+            Self::NonUniformOffsets => {
+                "automatic remap rejected: affected anchors moved by non-uniform offsets"
+            }
+        }
+    }
+}
+
+fn remap_edits(
+    previous: &str,
+    current: &str,
+    edits: &[Edit],
+) -> Result<(Vec<Edit>, String), RemapRejection> {
     if edits
         .iter()
         .all(|edit| matches!(edit, Edit::InsertHead { .. } | Edit::InsertTail { .. }))
     {
-        return Some((edits.to_vec(), STABLE_DRIFT_WARNING));
+        return Ok((edits.to_vec(), STABLE_DRIFT_WARNING.to_owned()));
     }
 
     let line_map = unchanged_line_map(previous, current);
     let targeted = targeted_lines(edits);
     if !validate_anchor_context(previous, current, &line_map, &targeted) {
-        return None;
+        return Err(RemapRejection::AmbiguousOrChangedContext);
     }
 
-    let mut offsets = Vec::new();
+    let mut mappings = Vec::new();
     let mut map_line = |line: usize| {
-        let mapped = line_map.get(&line).copied()?;
-        offsets.push(mapped as isize - line as isize);
-        Some(mapped)
+        let mapped = line_map
+            .get(&line)
+            .copied()
+            .ok_or(RemapRejection::AmbiguousOrChangedContext)?;
+        mappings.push((line, mapped));
+        Ok(mapped)
     };
     let mut remapped = Vec::with_capacity(edits.len());
     for edit in edits {
@@ -508,11 +568,36 @@ fn remap_edits(previous: &str, current: &str, edits: &[Edit]) -> Option<(Vec<Edi
             Edit::InsertHead { .. } | Edit::InsertTail { .. } => edit.clone(),
         });
     }
-    let offset = *offsets.first()?;
-    offsets
+    mappings.sort_unstable();
+    mappings.dedup();
+    let Some(offset) = mappings
+        .first()
+        .map(|(old, new)| *new as isize - *old as isize)
+    else {
+        return Err(RemapRejection::AmbiguousOrChangedContext);
+    };
+    if !mappings
         .iter()
-        .all(|candidate| *candidate == offset)
-        .then_some((remapped, REMAP_WARNING))
+        .all(|(old, new)| *new as isize - *old as isize == offset)
+    {
+        return Err(RemapRejection::NonUniformOffsets);
+    }
+    let warning = if offset == 0 {
+        let anchors = mappings
+            .iter()
+            .map(|(line, _)| line.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{VALIDATED_ANCHORS_WARNING_PREFIX}: {anchors}; {VERIFY_DIFF_GUIDANCE}")
+    } else {
+        let mappings = mappings
+            .iter()
+            .map(|(old, new)| format!("{old}→{new}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{REMAP_WARNING_PREFIX}: {mappings}; {VERIFY_DIFF_GUIDANCE}")
+    };
+    Ok((remapped, warning))
 }
 
 fn content_lines(content: &str) -> Vec<&str> {
@@ -611,11 +696,12 @@ fn duplicated_lines<'a>(lines: &[&'a str]) -> std::collections::HashSet<&'a str>
 }
 
 fn stale_error(
-    path: &Path,
     stale_tag: &str,
     current_tag: &str,
     content: &str,
-    edits: &[super::hashline_patch::Edit],
+    edits: &[Edit],
+    snapshot_available: bool,
+    rejection: Option<RemapRejection>,
 ) -> String {
     let lines: Vec<_> = content.lines().collect();
     let anchor = edits
@@ -633,9 +719,27 @@ fn stale_error(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let reason = rejection
+        .map(|rejection| format!(" {}.", rejection.message()))
+        .unwrap_or_default();
+    let tag_guidance = if snapshot_available {
+        format!("stale tag {stale_tag}. Fresh tag: {current_tag}.")
+    } else if stale_tag == current_tag {
+        format!(
+            "Tag {stale_tag} matches the live normalized content, but its snapshot is unavailable (possibly evicted), so anchors cannot be verified."
+        )
+    } else {
+        format!(
+            "Snapshot for supplied tag {stale_tag} is unavailable (possibly evicted). Current tag: {current_tag}."
+        )
+    };
+    let recovery = if snapshot_available {
+        "Re-author the patch directly against this fresh tag and window; do not retry the stale payload."
+    } else {
+        "Re-read the file to create a verified snapshot, then re-author the patch from that read's tag and numbering; do not retry the stale payload."
+    };
     format!(
-        "stale tag {stale_tag} for {}. Fresh tag: {current_tag}. Current lines around requested anchor {anchor}:\n{window}\nRe-author the patch against this fresh tag and numbering; do not retry the stale payload.",
-        path.display()
+        "{tag_guidance}{reason} Current lines around requested anchor {anchor}:\n{window}\n{recovery}"
     )
 }
 
@@ -652,6 +756,18 @@ pub fn normalize(content: &str) -> (String, TextFormat) {
             crlf: crlf_count > lf_count.saturating_sub(crlf_count),
         },
     )
+}
+
+fn validate_tag(tag: &str) -> Result<(), &'static str> {
+    if tag.len() == 16
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(INVALID_TAG_ERROR)
+    }
 }
 
 pub fn content_tag(content: &str) -> ContentTag {
@@ -678,6 +794,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn tags_are_stable_lowercase_64_bit_hex() {
@@ -685,6 +802,68 @@ mod tests {
         assert_eq!(tag.len(), 16);
         assert!(tag.chars().all(|character| character.is_ascii_hexdigit()));
         assert_eq!(tag, content_tag("same content"));
+    }
+
+    #[test_case("0123456789abcde"; "short")]
+    #[test_case("0123456789abcdef0"; "long")]
+    #[test_case("0123456789abcdeF"; "uppercase")]
+    #[test_case("0123456789abcdeg"; "nonhex")]
+    fn edit_rejects_invalid_tag_before_patch_parsing_or_file_read(tag: &str) {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("missing");
+            let state = HashlineState::new();
+
+            let error = state.edit(&path, tag, "not a patch").await.unwrap_err();
+
+            assert_eq!(
+                error,
+                format!("{}: {INVALID_TAG_ERROR}", canonical_path(&path).display())
+            );
+        });
+    }
+
+    #[test]
+    fn invalid_tag_in_multi_section_reports_context_and_writes_nothing() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let first = dir.path().join("first");
+            let second = dir.path().join("second");
+            fs::write(&first, "one\n").unwrap();
+            fs::write(&second, "two\n").unwrap();
+            let writes = Arc::new(AtomicUsize::new(0));
+            let write_count = Arc::clone(&writes);
+            let state = HashlineState::with_writer(Arc::new(move |path, bytes| {
+                write_count.fetch_add(1, Ordering::SeqCst);
+                fs::write(path, bytes).map_err(|error| error.to_string())
+            }));
+            let first_tag = state.record(&first, "one\n").tag;
+            let sections = [
+                EditSection {
+                    path: &first,
+                    tag: &first_tag,
+                    patch: "not a patch",
+                },
+                EditSection {
+                    path: &second,
+                    tag: "0123456789ABCDEf",
+                    patch: "PUT 1.=1:\n+changed",
+                },
+            ];
+
+            let error = state.edit_sections(&sections).await.unwrap_err();
+
+            assert_eq!(
+                error,
+                format!(
+                    "section 2 ({}): {INVALID_TAG_ERROR}",
+                    canonical_path(&second).display()
+                )
+            );
+            assert_eq!(writes.load(Ordering::SeqCst), 0);
+            assert_eq!(fs::read_to_string(&first).unwrap(), "one\n");
+            assert_eq!(fs::read_to_string(&second).unwrap(), "two\n");
+        });
     }
 
     #[test]
@@ -778,6 +957,11 @@ mod tests {
             );
             assert!(error.contains("1: one\n2: changed"), "got: {error}");
             assert!(error.contains("requested anchor 2"), "got: {error}");
+            assert!(
+                error.contains("Re-author the patch directly"),
+                "got: {error}"
+            );
+            assert!(!error.contains("Re-read"), "got: {error}");
             assert_eq!(fs::read_to_string(&path).unwrap(), "one\nchanged\n");
 
             fs::write(&path, [0xff]).unwrap();
@@ -942,7 +1126,12 @@ mod tests {
                 .unwrap();
 
             assert_eq!(&*result.after, "new\nalpha\nchanged\ngamma\n");
-            assert_eq!(result.warning, Some(REMAP_WARNING));
+            assert_eq!(
+                result.warning.as_deref(),
+                Some(
+                    "warning: stale line anchors remapped: 2→3; verify the diff matches your intent"
+                )
+            );
             assert_eq!(result.snapshot.tag, content_tag(&result.after));
             assert_eq!(fs::read_to_string(path).unwrap(), &*result.after);
         });
@@ -980,14 +1169,16 @@ mod tests {
                     "start\nduplicate\nend\n",
                     "start\nduplicate\nmiddle\nduplicate\nend\n",
                     "PUT 2.=2:\n+changed",
+                    "anchor ambiguity or changed surrounding context",
                 ),
                 (
                     "a\nb\nc\nd\ne\nf\n",
                     "above\na\nb\nc\nd\nbetween\ne\nf\n",
                     "PUT 2.=2:\n+B\nPUT 5.=5:\n+E",
+                    "non-uniform offsets",
                 ),
             ];
-            for (original, current, patch) in cases {
+            for (original, current, patch, reason) in cases {
                 let dir = tempfile::TempDir::new().unwrap();
                 let path = dir.path().join("file");
                 fs::write(&path, original).unwrap();
@@ -998,8 +1189,38 @@ mod tests {
                 let error = state.edit(&path, &snapshot.tag, patch).await.unwrap_err();
 
                 assert!(error.contains("stale tag"), "got: {error}");
+                assert!(error.contains(reason), "got: {error}");
                 assert_eq!(fs::read_to_string(path).unwrap(), current);
             }
+        });
+    }
+
+    #[test]
+    fn stale_disjoint_edit_validates_unchanged_anchors_without_remap_wording() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let original = "one\ntwo\nthree\nfour\n";
+            let current = "one\ntwo\nthree\nexternal\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, original);
+            fs::write(&path, current).unwrap();
+
+            let result = state
+                .edit(&path, &snapshot.tag, "PUT 2.=2:\n+changed")
+                .await
+                .unwrap();
+
+            assert_eq!(&*result.after, "one\nchanged\nthree\nexternal\n");
+            assert_eq!(fs::read_to_string(&path).unwrap(), &*result.after);
+            assert_eq!(result.snapshot.tag, content_tag(&result.after));
+            assert_eq!(
+                result.warning.as_deref(),
+                Some(
+                    "warning: stale file drift detected; line anchors validated unchanged: 2; verify the diff matches your intent"
+                )
+            );
         });
     }
 
@@ -1024,7 +1245,12 @@ mod tests {
                 &*result.after,
                 "above\nleft\nchanged\nright\nother\nduplicate\ntail\n"
             );
-            assert_eq!(result.warning, Some(REMAP_WARNING));
+            assert_eq!(
+                result.warning.as_deref(),
+                Some(
+                    "warning: stale line anchors remapped: 2→3; verify the diff matches your intent"
+                )
+            );
         });
     }
 
@@ -1046,7 +1272,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(&*result.after, "head\nchanged\ntwo\nexternal\ntail\n");
-            assert_eq!(result.warning, Some(STABLE_DRIFT_WARNING));
+            assert_eq!(result.warning.as_deref(), Some(STABLE_DRIFT_WARNING));
             assert_eq!(result.snapshot.tag, content_tag(&result.after));
         });
     }
@@ -1163,7 +1389,14 @@ mod tests {
             ];
 
             let error = state.edit_sections(&stale).await.unwrap_err();
+            assert!(error.contains("section 2"), "got: {error}");
+            assert!(
+                error.contains(&canonical_path(&second).display().to_string()),
+                "got: {error}"
+            );
             assert!(error.contains("stale tag"), "got: {error}");
+            let canonical_second = canonical_path(&second).display().to_string();
+            assert_eq!(error.matches(&canonical_second).count(), 1, "got: {error}");
             assert_eq!(writes.load(Ordering::SeqCst), 0);
             assert_eq!(fs::read_to_string(&first).unwrap(), "one\n");
 
@@ -1187,6 +1420,49 @@ mod tests {
             let error = state.edit_sections(&duplicate).await.unwrap_err();
             assert!(error.contains("duplicate canonical path"), "got: {error}");
             assert!(error.contains("merge"), "got: {error}");
+
+            let malformed = [
+                EditSection {
+                    path: &first,
+                    tag: &first_tag,
+                    patch: "PUT 1.=1:\n+first",
+                },
+                EditSection {
+                    path: &second,
+                    tag: &second_tag,
+                    patch: "not a patch",
+                },
+            ];
+            let error = state.edit_sections(&malformed).await.unwrap_err();
+            assert!(error.contains("section 2"), "got: {error}");
+            assert!(
+                error.contains(&canonical_path(&second).display().to_string()),
+                "got: {error}"
+            );
+        });
+    }
+
+    #[test]
+    fn unavailable_matching_snapshot_requires_reread_without_fake_fresh_tag() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\ntwo\n").unwrap();
+            let state = HashlineState::with_limits(0, DEFAULT_MAX_TOTAL_BYTES);
+            let tag = state.record(&path, "one\ntwo\n").tag;
+
+            let error = state
+                .edit(&path, &tag, "PUT 2.=2:\n+changed")
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("snapshot is unavailable"), "got: {error}");
+            assert!(
+                error.contains("matches the live normalized content"),
+                "got: {error}"
+            );
+            assert!(error.contains("Re-read"), "got: {error}");
+            assert!(!error.contains("Fresh tag"), "got: {error}");
         });
     }
 

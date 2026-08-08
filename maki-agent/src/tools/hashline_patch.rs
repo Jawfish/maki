@@ -325,7 +325,9 @@ pub fn apply_patch(content: &str, edits: &[Edit]) -> Result<String, PatchError> 
             } => lines.splice(0..0, inserted.iter().cloned()).for_each(drop),
             Edit::InsertTail {
                 lines: inserted, ..
-            } => lines.extend(inserted.iter().cloned()),
+            } => lines
+                .splice(line_count..line_count, inserted.iter().cloned())
+                .for_each(drop),
         }
     }
 
@@ -400,6 +402,32 @@ mod tests {
             apply("one\ntwo\nthree\nfour\nfive", patch),
             "one\nafter one\ntwo\nTHREE\nfour\nbefore five"
         );
+    }
+
+    #[test_case(
+        "one\ntwo",
+        "PUT >$:\n+first\nPUT >$:\n+second\nPUT >$:\n+third",
+        "one\ntwo\nfirst\nsecond\nthird";
+        "repeated_tail_inserts"
+    )]
+    #[test_case(
+        "one\ntwo",
+        "PUT >$:\n+tail one\nPUT >2:\n+after one\nPUT >$:\n+tail two\nPUT >2:\n+after two",
+        "one\ntwo\ntail one\nafter one\ntail two\nafter two";
+        "tail_and_last_line_share_declaration_order"
+    )]
+    #[test_case(
+        "",
+        "PUT >$:\n+tail one\nPUT <1:\n+head one\nPUT >$:\n+tail two\nPUT <1:\n+head two",
+        "tail one\nhead one\ntail two\nhead two";
+        "empty_file_boundary_inserts_share_declaration_order"
+    )]
+    fn same_position_inserts_preserve_declaration_order(
+        content: &str,
+        patch: &str,
+        expected: &str,
+    ) {
+        assert_eq!(apply(content, patch), expected);
     }
 
     #[test_case("one\ntwo\n", "PUT 2.=2:\n+TWO", "one\nTWO\n"; "preserves_present_newline")]

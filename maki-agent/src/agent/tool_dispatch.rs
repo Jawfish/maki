@@ -38,7 +38,10 @@ impl RecentCalls {
         h.finish()
     }
 
-    fn is_doom_loop(&self, name: &str, input: &Value) -> bool {
+    fn is_doom_loop(&self, name: &str, input: &Value, bypass: bool) -> bool {
+        if bypass {
+            return false;
+        }
         let hash = Self::hash_input(input);
         self.0.len() >= DOOM_LOOP_THRESHOLD - 1
             && self
@@ -407,7 +410,10 @@ pub(super) async fn process_tool_calls(
             input_preview = %crate::tools::schema::preview(&input.to_string()),
             "parsing tool call"
         );
-        if recent_calls.is_doom_loop(&name, &input) {
+        let bypass_doom_loop = name == "edit"
+            && ctx.config.hashline_edit
+            && tracked_hashline_no_op(&ctx.hashline, &input);
+        if recent_calls.is_doom_loop(&name, &input, bypass_doom_loop) {
             warn!(tool = %name, "doom loop detected, skipping execution");
             immediate_errors.push(ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE));
         } else {
@@ -472,6 +478,27 @@ pub(super) async fn process_tool_calls(
 
 /// Test-only entry that skips native lookup, letting plan-mode and MCP tests
 /// exercise the dispatch path without registering a fake native tool.
+fn tracked_hashline_no_op(state: &crate::tools::HashlineState, input: &Value) -> bool {
+    let Some([section]) = input
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    else {
+        return false;
+    };
+    let Some(section) = section.as_object() else {
+        return false;
+    };
+    let (Some(path), Some(tag), Some(patch)) = (
+        section.get("path").and_then(Value::as_str),
+        section.get("tag").and_then(Value::as_str),
+        section.get("patch").and_then(Value::as_str),
+    ) else {
+        return false;
+    };
+    state.has_two_prior_no_ops(std::path::Path::new(path), tag, patch)
+}
+
 #[cfg(test)]
 async fn dispatch_mcp(
     ctx: &ToolContext,
@@ -521,7 +548,41 @@ mod tests {
             .map(|(n, p)| (*n, serde_json::json!({"path": p})))
             .collect();
         let input = serde_json::json!({"path": "/a"});
-        assert_eq!(recent_calls(&entries).is_doom_loop(name, &input), expected);
+        assert_eq!(
+            recent_calls(&entries).is_doom_loop(name, &input, false),
+            expected
+        );
+    }
+
+    #[test]
+    fn hashline_edit_bypasses_only_a_tracked_single_section_no_op() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("file");
+        std::fs::write(&path, "same\n").unwrap();
+        let state = crate::tools::HashlineState::new();
+        let tag = state.record(&path, "same\n").tag;
+        let patch = "PUT 1.=1:\n+same";
+        smol::block_on(async {
+            for _ in 0..2 {
+                state.edit(&path, &tag, patch).await.unwrap_err();
+            }
+        });
+        let section = serde_json::json!({"path": path, "tag": tag, "patch": patch});
+        assert!(tracked_hashline_no_op(
+            &state,
+            &serde_json::json!({"sections": [section.clone()]})
+        ));
+        assert!(!tracked_hashline_no_op(
+            &state,
+            &serde_json::json!({"sections": [section.clone(), section]})
+        ));
+        for input in [
+            serde_json::json!({"sections": []}),
+            serde_json::json!({"sections": [{"path": 1, "tag": tag, "patch": patch}]}),
+            serde_json::json!({"sections": [{"path": path, "tag": "stale", "patch": patch}]}),
+        ] {
+            assert!(!tracked_hashline_no_op(&state, &input));
+        }
     }
 
     fn local_ctx(
