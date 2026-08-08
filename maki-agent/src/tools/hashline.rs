@@ -502,6 +502,14 @@ fn remap_edits(
     current: &str,
     edits: &[Edit],
 ) -> Result<(Vec<Edit>, String), RemapRejection> {
+    if edits.iter().any(|edit| {
+        matches!(
+            edit,
+            Edit::ReplaceBlock { .. } | Edit::InsertAfterBlock { .. } | Edit::CutBlock { .. }
+        )
+    }) {
+        return Err(RemapRejection::AmbiguousOrChangedContext);
+    }
     if edits
         .iter()
         .all(|edit| matches!(edit, Edit::InsertHead { .. } | Edit::InsertTail { .. }))
@@ -566,6 +574,9 @@ fn remap_edits(
                 patch_line: *patch_line,
             },
             Edit::InsertHead { .. } | Edit::InsertTail { .. } => edit.clone(),
+            Edit::ReplaceBlock { .. } | Edit::InsertAfterBlock { .. } | Edit::CutBlock { .. } => {
+                unreachable!()
+            }
         });
     }
     mappings.sort_unstable();
@@ -636,7 +647,11 @@ fn targeted_lines(edits: &[Edit]) -> Vec<usize> {
             Edit::Replace { start, end, .. } | Edit::Cut { start, end, .. } => {
                 lines.extend(*start..=*end);
             }
-            Edit::InsertBefore { line, .. } | Edit::InsertAfter { line, .. } => lines.push(*line),
+            Edit::InsertBefore { line, .. }
+            | Edit::InsertAfter { line, .. }
+            | Edit::ReplaceBlock { line, .. }
+            | Edit::InsertAfterBlock { line, .. }
+            | Edit::CutBlock { line, .. } => lines.push(*line),
             Edit::InsertHead { .. } | Edit::InsertTail { .. } => {}
         }
     }

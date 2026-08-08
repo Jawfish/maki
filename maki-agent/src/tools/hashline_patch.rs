@@ -36,12 +36,22 @@ pub enum Edit {
         lines: Vec<String>,
         patch_line: usize,
     },
+    ReplaceBlock {
+        line: usize,
+        lines: Vec<String>,
+        patch_line: usize,
+    },
     InsertBefore {
         line: usize,
         lines: Vec<String>,
         patch_line: usize,
     },
     InsertAfter {
+        line: usize,
+        lines: Vec<String>,
+        patch_line: usize,
+    },
+    InsertAfterBlock {
         line: usize,
         lines: Vec<String>,
         patch_line: usize,
@@ -59,13 +69,21 @@ pub enum Edit {
         end: usize,
         patch_line: usize,
     },
+    CutBlock {
+        line: usize,
+        patch_line: usize,
+    },
 }
 
 impl Edit {
     pub fn anchor(&self) -> Option<usize> {
         match self {
             Self::Replace { start, .. } | Self::Cut { start, .. } => Some(*start),
-            Self::InsertBefore { line, .. } | Self::InsertAfter { line, .. } => Some(*line),
+            Self::ReplaceBlock { line, .. }
+            | Self::InsertBefore { line, .. }
+            | Self::InsertAfter { line, .. }
+            | Self::InsertAfterBlock { line, .. }
+            | Self::CutBlock { line, .. } => Some(*line),
             Self::InsertHead { .. } => Some(1),
             Self::InsertTail { .. } => None,
         }
@@ -74,18 +92,27 @@ impl Edit {
     fn patch_line(&self) -> usize {
         match self {
             Self::Replace { patch_line, .. }
+            | Self::ReplaceBlock { patch_line, .. }
             | Self::InsertBefore { patch_line, .. }
             | Self::InsertAfter { patch_line, .. }
+            | Self::InsertAfterBlock { patch_line, .. }
             | Self::InsertHead { patch_line, .. }
             | Self::InsertTail { patch_line, .. }
-            | Self::Cut { patch_line, .. } => *patch_line,
+            | Self::Cut { patch_line, .. }
+            | Self::CutBlock { patch_line, .. } => *patch_line,
         }
     }
 
     fn affected_range(&self) -> Option<(usize, usize)> {
         match self {
             Self::Replace { start, end, .. } | Self::Cut { start, end, .. } => Some((*start, *end)),
-            _ => None,
+            Self::ReplaceBlock { .. }
+            | Self::InsertBefore { .. }
+            | Self::InsertAfter { .. }
+            | Self::InsertAfterBlock { .. }
+            | Self::InsertHead { .. }
+            | Self::InsertTail { .. }
+            | Self::CutBlock { .. } => None,
         }
     }
 }
@@ -102,11 +129,13 @@ pub fn parse_patch(patch: &str) -> Result<Vec<Edit>, PatchError> {
             })?;
             match edit {
                 Edit::Replace { lines, .. }
+                | Edit::ReplaceBlock { lines, .. }
                 | Edit::InsertBefore { lines, .. }
                 | Edit::InsertAfter { lines, .. }
+                | Edit::InsertAfterBlock { lines, .. }
                 | Edit::InsertHead { lines, .. }
                 | Edit::InsertTail { lines, .. } => lines.push(body.to_owned()),
-                Edit::Cut { .. } => {
+                Edit::Cut { .. } | Edit::CutBlock { .. } => {
                     return Err(PatchError::new(
                         patch_line,
                         "`CUT` does not accept `+TEXT` body rows",
@@ -140,11 +169,13 @@ fn finish_pending(pending: &mut Option<Edit>, edits: &mut Vec<Edit>) -> Result<(
     };
     let empty_put = match &edit {
         Edit::Replace { lines, .. }
+        | Edit::ReplaceBlock { lines, .. }
         | Edit::InsertBefore { lines, .. }
         | Edit::InsertAfter { lines, .. }
+        | Edit::InsertAfterBlock { lines, .. }
         | Edit::InsertHead { lines, .. }
         | Edit::InsertTail { lines, .. } => lines.is_empty(),
-        Edit::Cut { .. } => false,
+        Edit::Cut { .. } | Edit::CutBlock { .. } => false,
     };
     if empty_put {
         return Err(PatchError::new(
@@ -173,6 +204,16 @@ fn parse_header(row: &str, patch_line: usize) -> Result<Edit, PatchError> {
                 patch_line,
             });
         }
+        if let Some(line) = target
+            .strip_prefix('>')
+            .and_then(|target| target.strip_suffix('*'))
+        {
+            return Ok(Edit::InsertAfterBlock {
+                line: parse_line_number(line, patch_line)?,
+                lines: Vec::new(),
+                patch_line,
+            });
+        }
         if let Some(line) = target.strip_prefix('<') {
             return Ok(Edit::InsertBefore {
                 line: parse_line_number(line, patch_line)?,
@@ -182,6 +223,13 @@ fn parse_header(row: &str, patch_line: usize) -> Result<Edit, PatchError> {
         }
         if let Some(line) = target.strip_prefix('>') {
             return Ok(Edit::InsertAfter {
+                line: parse_line_number(line, patch_line)?,
+                lines: Vec::new(),
+                patch_line,
+            });
+        }
+        if let Some(line) = target.strip_suffix('*') {
+            return Ok(Edit::ReplaceBlock {
                 line: parse_line_number(line, patch_line)?,
                 lines: Vec::new(),
                 patch_line,
@@ -202,6 +250,12 @@ fn parse_header(row: &str, patch_line: usize) -> Result<Edit, PatchError> {
                 patch_line,
                 "`CUT` headers must not end with `:` because they have no body",
             ));
+        }
+        if let Some(line) = target.strip_suffix('*') {
+            return Ok(Edit::CutBlock {
+                line: parse_line_number(line, patch_line)?,
+                patch_line,
+            });
         }
         let (start, end) = parse_range(target, patch_line)?;
         return Ok(Edit::Cut {
@@ -328,6 +382,12 @@ pub fn apply_patch(content: &str, edits: &[Edit]) -> Result<String, PatchError> 
             } => lines
                 .splice(line_count..line_count, inserted.iter().cloned())
                 .for_each(drop),
+            Edit::ReplaceBlock { .. } | Edit::InsertAfterBlock { .. } | Edit::CutBlock { .. } => {
+                return Err(PatchError::new(
+                    edit.patch_line(),
+                    "block target must be resolved before application",
+                ));
+            }
         }
     }
 
@@ -370,16 +430,44 @@ fn application_position(edit: &Edit, line_count: usize) -> Result<(usize, usize)
         }
         Edit::InsertHead { .. } => Ok((0, 0)),
         Edit::InsertTail { .. } => Ok((line_count, line_count)),
+        Edit::ReplaceBlock { .. } | Edit::InsertAfterBlock { .. } | Edit::CutBlock { .. } => {
+            Err(PatchError::new(
+                edit.patch_line(),
+                "block target must be resolved before application",
+            ))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_patch, parse_patch};
+    use super::{Edit, apply_patch, parse_patch};
     use test_case::test_case;
 
     fn apply(content: &str, patch: &str) -> String {
         apply_patch(content, &parse_patch(patch).unwrap()).unwrap()
+    }
+    #[test]
+    fn parses_unresolved_block_targets() {
+        assert_eq!(
+            parse_patch("PUT 12*:\n+replacement\nPUT >7*:\n+after\nCUT 30*").unwrap(),
+            vec![
+                Edit::ReplaceBlock {
+                    line: 12,
+                    lines: vec!["replacement".to_owned()],
+                    patch_line: 1,
+                },
+                Edit::InsertAfterBlock {
+                    line: 7,
+                    lines: vec!["after".to_owned()],
+                    patch_line: 3,
+                },
+                Edit::CutBlock {
+                    line: 30,
+                    patch_line: 5,
+                },
+            ]
+        );
     }
 
     #[test_case("one\ntwo\nthree", "PUT 2.=2:\n+TWO", "one\nTWO\nthree"; "replace_single_line")]
@@ -450,6 +538,17 @@ mod tests {
     #[test_case("PUT 2.=1:\n+x", 1, "start must not be greater"; "reversed_range")]
     #[test_case("PUT 0.=1:\n+x", 1, "1-based"; "zero_line")]
     #[test_case("", 1, "at least one operation"; "empty_patch")]
+    #[test_case("PUT *2*:\n+x", 1, "not a valid line number"; "star_before_line")]
+    #[test_case("PUT 2**:\n+x", 1, "not a valid line number"; "repeated_star")]
+    #[test_case("PUT >2**:\n+x", 1, "not a valid line number"; "repeated_insert_after_star")]
+    #[test_case("PUT <2*:\n+x", 1, "not a valid line number"; "block_insert_before")]
+    #[test_case("PUT 2*.=3:\n+x", 1, "not a valid line number"; "star_in_range")]
+    #[test_case("CUT >2*", 1, "not a valid line number"; "block_cut_after")]
+    #[test_case("PUT 2*:", 1, "needs at least one `+TEXT`"; "empty_block_put")]
+    #[test_case("PUT 1.=1:\n+x\nPUT 4* bad", 3, "malformed row"; "malformed_block_after_numeric")]
+    #[test_case("CUT 2*:\n+x", 1, "must not end with `:`"; "block_cut_with_colon")]
+    #[test_case("CUT 2*\n+x", 2, "does not accept `+TEXT`"; "block_cut_with_body")]
+    #[test_case("PUT >2*:", 1, "needs at least one `+TEXT`"; "empty_block_insert_after")]
     fn rejects_malformed_patch(patch: &str, line: usize, rule: &str) {
         let error = parse_patch(patch).unwrap_err();
         assert_eq!(error.line(), line);
