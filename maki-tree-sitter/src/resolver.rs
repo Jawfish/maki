@@ -50,15 +50,14 @@ pub fn resolve_block(
     let root = tree.root_node();
     let mut candidates = Vec::new();
     collect_candidates(root, language, source, target, &mut candidates);
-    candidates.sort_by_key(|candidate| {
-        candidate.end_byte() - attached_start(*candidate, language, source)
-    });
+    candidates
+        .sort_by_key(|candidate| candidate.end_byte() - block_start(*candidate, language, source));
 
     if let Some(node) = candidates.first().copied() {
         if node.has_error() {
             return Err(BlockResolveError::AmbiguousSyntax { line });
         }
-        return Ok(attached_start(node, language, source)..node.end_byte());
+        return Ok(block_start(node, language, source)..node.end_byte());
     }
     if contains_error(root, target) {
         Err(BlockResolveError::AmbiguousSyntax { line })
@@ -93,7 +92,7 @@ fn collect_candidates<'tree>(
     candidates: &mut Vec<Node<'tree>>,
 ) {
     if eligible(language, node.kind()) && !inside_decorator(node) {
-        let range = attached_start(node, language, source)..node.end_byte();
+        let range = block_start(node, language, source)..node.end_byte();
         if intersects(&range, target) {
             candidates.push(node);
         }
@@ -111,6 +110,19 @@ fn intersects(left: &Range<usize>, right: &Range<usize>) -> bool {
 fn inside_decorator(node: Node<'_>) -> bool {
     node.parent()
         .is_some_and(|parent| matches!(parent.kind(), "decorated_definition" | "export_statement"))
+}
+
+fn block_start(node: Node<'_>, language: Language, source: &str) -> usize {
+    let start = attached_start(node, language, source);
+    let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+    if source[line_start..start]
+        .bytes()
+        .all(|byte| byte.is_ascii_whitespace())
+    {
+        line_start
+    } else {
+        start
+    }
 }
 
 fn attached_start(node: Node<'_>, language: Language, source: &str) -> usize {
@@ -261,7 +273,7 @@ mod tests {
         let source = "class Service {\n  /** Fetches data. */\n  @memoize\n  fetch(): string {\n    return \"ok\";\n  }\n\n  stop() {}\n}\n";
         assert_eq!(
             selected(source, "sample.ts", 5),
-            "/** Fetches data. */\n  @memoize\n  fetch(): string {\n    return \"ok\";\n  }"
+            "  /** Fetches data. */\n  @memoize\n  fetch(): string {\n    return \"ok\";\n  }"
         );
         assert_eq!(
             selected(source, "sample.ts", 2),
@@ -284,11 +296,21 @@ mod tests {
 
     #[test]
     fn one_line_block_does_not_consume_adjacent_text() {
-        let source = "fn first() {}\nfn second() {}\n";
+        let source = "fn café() {}\nfn second() {}\n";
         let range = resolve_block(source, Path::new("sample.rs"), 1).unwrap();
-        assert_eq!(&source[range.clone()], "fn first() {}");
+        assert_eq!(&source[range.clone()], "fn café() {}");
+        assert_eq!(&source[range.end..], "\nfn second() {}\n");
         assert!(source.is_char_boundary(range.start));
         assert!(source.is_char_boundary(range.end));
+    }
+
+    #[test]
+    fn block_starts_before_leading_indentation() {
+        let source = "mod tests {\n    #[test]\n    fn nested() {}\n}\n";
+        assert_eq!(
+            selected(source, "sample.rs", 3),
+            "    #[test]\n    fn nested() {}"
+        );
     }
 
     #[test_case("sample.txt", "fn main() {}", 1, BlockResolveError::UnsupportedFile { path: "sample.txt".to_owned() }; "unsupported_file")]
