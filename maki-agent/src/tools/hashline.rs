@@ -1,13 +1,16 @@
-use std::collections::{HashMap, VecDeque};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-
 use async_lock::{Mutex as AsyncMutex, MutexGuardArc};
+use maki_tree_sitter::resolve_block;
 use sha2::{Digest, Sha256};
 use similar::{DiffTag, TextDiff};
+use std::{
+    collections::{HashMap, VecDeque},
+    fs,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
-use super::hashline_patch::{Edit, apply_patch, parse_patch};
+use super::hashline_patch::{Edit, parse_patch};
 
 const BOM: &str = "\u{feff}";
 const DEFAULT_MAX_VERSIONS_PER_PATH: usize = 8;
@@ -82,6 +85,15 @@ struct PreflightEdit {
     after: String,
     format: TextFormat,
     warning: Option<String>,
+}
+
+#[derive(Debug)]
+struct ByteEdit {
+    range: Range<usize>,
+    affected: Option<Range<usize>>,
+    block_target: bool,
+    replacement: String,
+    patch_line: usize,
 }
 
 #[derive(Debug)]
@@ -367,7 +379,8 @@ impl HashlineState {
         } else {
             (edits, None)
         };
-        let after = apply_patch(&before, &edits).map_err(|error| error.to_string())?;
+        let byte_edits = lower_edits(&before, &path, &edits)?;
+        let after = apply_byte_edits(&before, byte_edits)?;
         if after == before {
             return Err(self.no_op_error(&path, section.tag, section.patch));
         }
@@ -482,6 +495,7 @@ impl HashlineState {
 enum RemapRejection {
     AmbiguousOrChangedContext,
     NonUniformOffsets,
+    BlockTarget,
 }
 
 impl RemapRejection {
@@ -493,6 +507,7 @@ impl RemapRejection {
             Self::NonUniformOffsets => {
                 "automatic remap rejected: affected anchors moved by non-uniform offsets"
             }
+            Self::BlockTarget => "block targets cannot be remapped against stale content",
         }
     }
 }
@@ -508,7 +523,7 @@ fn remap_edits(
             Edit::ReplaceBlock { .. } | Edit::InsertAfterBlock { .. } | Edit::CutBlock { .. }
         )
     }) {
-        return Err(RemapRejection::AmbiguousOrChangedContext);
+        return Err(RemapRejection::BlockTarget);
     }
     if edits
         .iter()
@@ -710,6 +725,257 @@ fn duplicated_lines<'a>(lines: &[&'a str]) -> std::collections::HashSet<&'a str>
         .collect()
 }
 
+fn lower_edits(content: &str, path: &Path, edits: &[Edit]) -> Result<Vec<ByteEdit>, String> {
+    let line_starts = line_starts(content);
+    let line_count = if content.is_empty() {
+        0
+    } else {
+        line_starts.len()
+    };
+    let mut lowered = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let out_of_bounds = |line: usize| {
+            format!(
+                "patch line {}: line {line} is out of bounds for a {line_count}-line file",
+                edit_patch_line(edit)
+            )
+        };
+        let line_start = |line: usize| {
+            line.checked_sub(1)
+                .and_then(|index| line_starts.get(index).copied())
+                .ok_or_else(|| out_of_bounds(line))
+        };
+        let lines_text = |lines: &[String]| lines.join("\n");
+        let byte_edit = match edit {
+            Edit::Replace {
+                start,
+                end,
+                lines,
+                patch_line,
+            } => {
+                let start_byte = line_start(*start)?;
+                let end_byte = line_end_with_newline(content, &line_starts, *end)
+                    .ok_or_else(|| out_of_bounds(*end))?;
+                let mut replacement = lines_text(lines);
+                if end_byte > 0 && content.as_bytes().get(end_byte - 1) == Some(&b'\n') {
+                    replacement.push('\n');
+                }
+                ByteEdit {
+                    block_target: false,
+                    range: start_byte..end_byte,
+                    affected: Some(start_byte..line_content_end(content, end_byte)),
+                    replacement,
+                    patch_line: *patch_line,
+                }
+            }
+            Edit::Cut {
+                start,
+                end,
+                patch_line,
+            } => {
+                let start_byte = line_start(*start)?;
+                let end_byte = line_end_with_newline(content, &line_starts, *end)
+                    .ok_or_else(|| out_of_bounds(*end))?;
+                ByteEdit {
+                    range: start_byte..end_byte,
+                    affected: Some(start_byte..line_content_end(content, end_byte)),
+                    replacement: String::new(),
+                    patch_line: *patch_line,
+                    block_target: false,
+                }
+            }
+            Edit::InsertBefore {
+                line,
+                lines,
+                patch_line,
+            } => {
+                let position = line_start(*line)?;
+                let end = line_end_with_newline(content, &line_starts, *line)
+                    .ok_or_else(|| out_of_bounds(*line))?;
+                ByteEdit {
+                    range: position..position,
+                    affected: Some(position..line_content_end(content, end)),
+                    block_target: false,
+                    replacement: format!("{}\n", lines_text(lines)),
+                    patch_line: *patch_line,
+                }
+            }
+            Edit::InsertAfter {
+                line,
+                lines,
+                patch_line,
+            } => {
+                let start = line_start(*line)?;
+                let position = line_end_with_newline(content, &line_starts, *line)
+                    .ok_or_else(|| out_of_bounds(*line))?;
+                let replacement =
+                    if content.as_bytes().get(position.wrapping_sub(1)) == Some(&b'\n') {
+                        format!("{}\n", lines_text(lines))
+                    } else {
+                        format!("\n{}", lines_text(lines))
+                    };
+                ByteEdit {
+                    range: position..position,
+                    affected: Some(start..line_content_end(content, position)),
+                    block_target: false,
+                    replacement,
+                    patch_line: *patch_line,
+                }
+            }
+            Edit::InsertHead { lines, patch_line } => ByteEdit {
+                range: 0..0,
+                affected: None,
+                block_target: false,
+                replacement: if content.is_empty() {
+                    lines_text(lines)
+                } else {
+                    format!("{}\n", lines_text(lines))
+                },
+                patch_line: *patch_line,
+            },
+            Edit::InsertTail { lines, patch_line } => ByteEdit {
+                range: content.len()..content.len(),
+                affected: None,
+                block_target: false,
+                replacement: if content.is_empty() {
+                    lines_text(lines)
+                } else if content.ends_with('\n') {
+                    format!("{}\n", lines_text(lines))
+                } else {
+                    format!("\n{}", lines_text(lines))
+                },
+                patch_line: *patch_line,
+            },
+            Edit::ReplaceBlock {
+                line,
+                lines,
+                patch_line,
+            } => {
+                let range = resolve_block(content, path, *line)
+                    .map_err(|error| format!("patch line {patch_line}: {error}"))?;
+                ByteEdit {
+                    range: range.clone(),
+                    affected: Some(range),
+                    block_target: true,
+                    replacement: lines_text(lines),
+                    patch_line: *patch_line,
+                }
+            }
+            Edit::CutBlock { line, patch_line } => {
+                let range = resolve_block(content, path, *line)
+                    .map_err(|error| format!("patch line {patch_line}: {error}"))?;
+                ByteEdit {
+                    range: range.clone(),
+                    affected: Some(range),
+                    block_target: true,
+                    replacement: String::new(),
+                    patch_line: *patch_line,
+                }
+            }
+            Edit::InsertAfterBlock {
+                line,
+                lines,
+                patch_line,
+            } => {
+                let affected = resolve_block(content, path, *line)
+                    .map_err(|error| format!("patch line {patch_line}: {error}"))?;
+                ByteEdit {
+                    range: affected.end..affected.end,
+                    affected: Some(affected),
+                    block_target: true,
+                    replacement: format!("\n{}", lines_text(lines)),
+                    patch_line: *patch_line,
+                }
+            }
+        };
+        lowered.push(byte_edit);
+    }
+    validate_byte_overlaps(&lowered)?;
+    Ok(lowered)
+}
+
+fn line_starts(content: &str) -> Vec<usize> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once(0)
+        .chain(
+            content
+                .match_indices('\n')
+                .map(|(index, _)| index + 1)
+                .filter(|start| *start < content.len()),
+        )
+        .collect()
+}
+
+fn line_end_with_newline(content: &str, starts: &[usize], line: usize) -> Option<usize> {
+    starts
+        .get(line)
+        .copied()
+        .or_else(|| (line == starts.len()).then_some(content.len()))
+}
+
+fn line_content_end(content: &str, end: usize) -> usize {
+    end - usize::from(end > 0 && content.as_bytes()[end - 1] == b'\n')
+}
+
+fn edit_patch_line(edit: &Edit) -> usize {
+    match edit {
+        Edit::Replace { patch_line, .. }
+        | Edit::ReplaceBlock { patch_line, .. }
+        | Edit::InsertBefore { patch_line, .. }
+        | Edit::InsertAfter { patch_line, .. }
+        | Edit::InsertAfterBlock { patch_line, .. }
+        | Edit::InsertHead { patch_line, .. }
+        | Edit::InsertTail { patch_line, .. }
+        | Edit::Cut { patch_line, .. }
+        | Edit::CutBlock { patch_line, .. } => *patch_line,
+    }
+}
+
+fn validate_byte_overlaps(edits: &[ByteEdit]) -> Result<(), String> {
+    for (index, left) in edits.iter().enumerate() {
+        let Some(left_range) = &left.affected else {
+            continue;
+        };
+        for right in &edits[index + 1..] {
+            let Some(right_range) = &right.affected else {
+                continue;
+            };
+            if (left.block_target || right.block_target)
+                && left_range.start < right_range.end
+                && right_range.start < left_range.end
+            {
+                return Err(format!(
+                    "patch line {}: resolved byte range {}..{} overlaps {}..{} from patch line {}",
+                    right.patch_line,
+                    right_range.start,
+                    right_range.end,
+                    left_range.start,
+                    left_range.end,
+                    left.patch_line
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_byte_edits(content: &str, mut edits: Vec<ByteEdit>) -> Result<String, String> {
+    edits.sort_unstable_by_key(|edit| (edit.range.start, edit.range.end, edit.patch_line));
+    let mut result = content.to_owned();
+    for edit in edits.into_iter().rev() {
+        if !result.is_char_boundary(edit.range.start) || !result.is_char_boundary(edit.range.end) {
+            return Err(format!(
+                "patch line {}: resolved edit is not on UTF-8 boundaries",
+                edit.patch_line
+            ));
+        }
+        result.replace_range(edit.range, &edit.replacement);
+    }
+    Ok(result)
+}
+
 fn stale_error(
     stale_tag: &str,
     current_tag: &str,
@@ -748,10 +1014,10 @@ fn stale_error(
             "Snapshot for supplied tag {stale_tag} is unavailable (possibly evicted). Current tag: {current_tag}."
         )
     };
-    let recovery = if snapshot_available {
-        "Re-author the patch directly against this fresh tag and window; do not retry the stale payload."
-    } else {
+    let recovery = if !snapshot_available || rejection == Some(RemapRejection::BlockTarget) {
         "Re-read the file to create a verified snapshot, then re-author the patch from that read's tag and numbering; do not retry the stale payload."
+    } else {
+        "Re-author the patch directly against this fresh tag and window; do not retry the stale payload."
     };
     format!(
         "{tag_guidance}{reason} Current lines around requested anchor {anchor}:\n{window}\n{recovery}"
@@ -1503,6 +1769,155 @@ mod tests {
             assert_eq!(
                 state.get(&path, &written.snapshot.tag),
                 Some(written.snapshot)
+            );
+        });
+    }
+
+    #[test]
+    fn block_operations_apply_exact_bytes_and_mix_with_numeric_edits() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("sample.rs");
+            let original =
+                "fn one() {} fn adjacent() {}\n\nfn two() {\n    old();\n}\n\nfn three() {}\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, original).tag;
+
+            let replaced = state
+                .edit(&path, &tag, "PUT 1*:\n+fn first() {}")
+                .await
+                .unwrap();
+            assert_eq!(
+                &*replaced.after,
+                "fn first() {} fn adjacent() {}\n\nfn two() {\n    old();\n}\n\nfn three() {}\n"
+            );
+
+            let mixed = state
+                .edit(
+                    &path,
+                    &replaced.snapshot.tag,
+                    "CUT 3*\nPUT >7*:\n+fn four() {}\nPUT <1:\n+// header",
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                &*mixed.after,
+                "// header\nfn first() {} fn adjacent() {}\n\n\n\nfn three() {}\nfn four() {}\n"
+            );
+        });
+    }
+
+    #[test]
+    fn block_preflight_failures_leave_every_section_byte_identical() {
+        smol::block_on(async {
+            for (patch, expected_error) in [
+                ("PUT 1*:\n+fn changed() {}\nCUT 2.=2", "overlaps"),
+                ("CUT 1*", "unsupported file"),
+                ("CUT 1*", "no complete syntax block"),
+            ] {
+                let dir = tempfile::TempDir::new().unwrap();
+                let first = dir.path().join("sample.rs");
+                let second = dir.path().join(if expected_error == "unsupported file" {
+                    "sample.txt"
+                } else {
+                    "other.rs"
+                });
+                let first_bytes = b"fn first() {\n    body();\n}\n";
+                let second_bytes = if expected_error == "overlaps" {
+                    b"fn second() {\n    body();\n}\n".as_slice()
+                } else if expected_error == "no complete syntax block" {
+                    b"use std::fmt;\n".as_slice()
+                } else {
+                    b"fn second() {}\n".as_slice()
+                };
+                fs::write(&first, first_bytes).unwrap();
+                fs::write(&second, second_bytes).unwrap();
+                let writes = Arc::new(AtomicUsize::new(0));
+                let write_count = Arc::clone(&writes);
+                let state = HashlineState::with_writer(Arc::new(move |path, bytes| {
+                    write_count.fetch_add(1, Ordering::SeqCst);
+                    fs::write(path, bytes).map_err(|error| error.to_string())
+                }));
+                let first_tag = state
+                    .record(&first, str::from_utf8(first_bytes).unwrap())
+                    .tag;
+                let second_tag = state
+                    .record(&second, str::from_utf8(second_bytes).unwrap())
+                    .tag;
+                let sections = [
+                    EditSection {
+                        path: &first,
+                        tag: &first_tag,
+                        patch: "PUT >$:\n+landed",
+                    },
+                    EditSection {
+                        path: &second,
+                        tag: &second_tag,
+                        patch,
+                    },
+                ];
+
+                let error = state.edit_sections(&sections).await.unwrap_err();
+
+                assert!(error.contains(expected_error), "got: {error}");
+                assert_eq!(writes.load(Ordering::SeqCst), 0);
+                assert_eq!(fs::read(&first).unwrap(), first_bytes);
+                assert_eq!(fs::read(&second).unwrap(), second_bytes);
+            }
+        });
+    }
+
+    #[test]
+    fn stale_block_fails_closed_while_numeric_stale_remapping_still_works() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("sample.rs");
+            let original = "fn first() {}\nfn second() {}\n";
+            let current = "// new\nfn first() {}\nfn second() {}\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, original);
+            fs::write(&path, current).unwrap();
+
+            let error = state
+                .edit(&path, &snapshot.tag, "CUT 1*")
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("block targets cannot be remapped"),
+                "got: {error}"
+            );
+            assert!(error.contains("Re-read the file"), "got: {error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), current);
+
+            let remapped = state
+                .edit(&path, &snapshot.tag, "PUT 2.=2:\n+fn changed() {}")
+                .await
+                .unwrap();
+            assert_eq!(&*remapped.after, "// new\nfn first() {}\nfn changed() {}\n");
+            assert!(remapped.warning.is_some());
+        });
+    }
+
+    #[test]
+    fn block_edits_restore_bom_and_crlf() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("sample.rs");
+            let raw = "\u{feff}fn first() {}\r\nfn second() {}\r\n";
+            fs::write(&path, raw).unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, raw).tag;
+
+            state
+                .edit(&path, &tag, "PUT 1*:\n+fn changed() {}")
+                .await
+                .unwrap();
+
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "\u{feff}fn changed() {}\r\nfn second() {}\r\n"
             );
         });
     }
