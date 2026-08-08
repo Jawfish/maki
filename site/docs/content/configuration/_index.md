@@ -105,6 +105,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `stale_read_check` | bool | `true` | - | Require re-reading a file that changed on disk before editing it |
+| `hashline_edit` | bool | `true` | - | Use revision-tagged reads and hashline editing |
 
 ### `provider`
 
@@ -162,6 +163,7 @@ maki.setup({
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `edit_lines` | boolean | `false` | - | Provide the opt-in `edit_lines` tool. |
+| `hashline_edit` | boolean | `true` | - | Use revision-tagged hashline editing. |
 | `insert_lines` | boolean | `false` | - | Provide the opt-in `insert_lines` tool. |
 | `multiedit` | boolean | `true` | - | Provide the `multiedit` tool. |
 

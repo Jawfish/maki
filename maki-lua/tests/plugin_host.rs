@@ -4173,6 +4173,11 @@ mod read_tool_required_params {
         for required in [
             "PUT N.=M:",
             "CUT N.=M",
+            "PUT N*:",
+            "PUT >N*:",
+            "Unlike `>N`",
+            "decorators, attributes, and documentation",
+            "never remap when stale",
             "+TEXT",
             "Wrong:",
             "Right:",

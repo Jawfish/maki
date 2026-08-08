@@ -21,22 +21,30 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 - Use replace_all for renaming across a file.
 ]]
 
-local HASHLINE_DESCRIPTION = [[Edit one or more revision-tagged files atomically with strict line operations.
+local HASHLINE_DESCRIPTION =
+  [[Edit one or more revision-tagged files atomically with strict line and syntax-block operations.
 
 Pass `sections`, each with `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. Tags and numbered content use normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF. Writes preserve the detected file format. All sections apply or none do. Operations in each patch use that tagged file's original line numbers, so later operations do not shift earlier anchors.
 
 Grammar:
 - Replace inclusive range: `PUT N.=M:` then one or more `+TEXT` rows.
-- Insert before/after: `PUT <N:` or `PUT >N:` then `+TEXT` rows.
+- Insert before/after a line: `PUT <N:` or `PUT >N:` then `+TEXT` rows.
 - Insert at file head/tail: `PUT <1:` or `PUT >$:` then `+TEXT` rows.
 - Delete inclusive range: `CUT N.=M` with no body.
+- Replace/delete a syntax block: `PUT N*:` or `CUT N*`.
+- Insert after a syntax block: `PUT >N*:`. Unlike `>N`, this follows the complete selected block, not line `N`.
 - Put multiple non-overlapping operations in one patch.
+
+Block rules:
+- On supported file types, `N*` selects the complete declaration or Markdown section at line `N`, including attached decorators, attributes, and documentation.
+- Unsupported or ambiguous blocks fail without writing; numeric operations remain available.
+- Block targets never remap when stale. Re-read the file, then re-author the patch with its fresh tag and numbering.
 
 Rules:
 - Every body row starts with exactly `+`; the rest is literal file content. Blank inserted lines are `+`.
 - Copy indentation after `+`. Do not include read's `N: ` line-number prefix.
 - Use the smallest exact range. `PUT` must have a non-empty body; use `CUT` to delete.
-- On success, use the returned tag for the next edit. On stale failure, use its fresh tag and numbered anchor window to re-author the patch. Never retry an unchanged no-op payload.
+- On success, use the returned tag for the next edit. On other stale failures, use its fresh tag and numbered anchor window to re-author the patch. Never retry an unchanged no-op payload.
 
 Wrong:
 `PUT 4.=8:\n old context\n-new\n+new` (diff/context rows are invalid)
@@ -46,7 +54,8 @@ Wrong:
 Right:
 `PUT 6.=6:\n+replacement`
 `CUT 9.=11`
-`PUT >3:\n+new line`]]
+`PUT >3:\n+new line`
+`PUT 12*:\n+/// Updated documentation\n+fn replacement() {}`]]
 
 local MULTIEDIT_DESCRIPTION = [[Make multiple find-and-replace edits to a single file atomically.
 Prefer this over edit when making multiple changes to the same file.

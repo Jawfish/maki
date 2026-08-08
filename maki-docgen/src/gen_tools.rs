@@ -10,6 +10,7 @@ use std::sync::Arc;
 use maki_lua::{OptionType, PluginHost};
 
 const DATE_PLACEHOLDER: &str = "YYYY-MM-DD";
+const HASHLINE_EDIT_GUIDANCE: &str = "Syntax-block patches: `PUT N*:` replaces and `CUT N*` deletes the complete declaration or Markdown section at line `N`; `PUT >N*:` inserts after that block, unlike line-based `>N`. Attached decorators, attributes, and documentation are included. Unsupported or ambiguous blocks fail without writing. Block targets never remap when stale: re-read, then re-author the patch with the fresh tag and numbering.";
 
 const SECTIONS: &[(&str, &[&str])] = &[
     (
@@ -158,6 +159,10 @@ fn write_tool_entry(out: &mut String, name: &str, info: &ToolInfo, opt_in: &Hash
     }
     writeln!(out, "### `{name}` *({badge_text})*").unwrap();
     writeln!(out).unwrap();
+    if name == "edit" {
+        writeln!(out, "{HASHLINE_EDIT_GUIDANCE}").unwrap();
+        writeln!(out).unwrap();
+    }
     writeln!(out, "{summary}").unwrap();
     writeln!(out).unwrap();
     write_param_table(out, &params);
@@ -412,5 +417,19 @@ mod tests {
             unsectioned.is_empty(),
             "registered tools missing from SECTIONS: {unsectioned:?}"
         );
+    }
+
+    #[test]
+    fn generated_edit_docs_include_block_guidance() {
+        let docs = generate();
+        for required in [
+            "`PUT N*:`",
+            "`PUT >N*:`",
+            "unlike line-based `>N`",
+            "Unsupported or ambiguous blocks fail without writing",
+            "Block targets never remap when stale",
+        ] {
+            assert!(docs.contains(required), "missing {required:?}: {docs}");
+        }
     }
 }
