@@ -271,12 +271,18 @@ impl PluginHost {
                     source: mlua::Error::runtime("bundled plugin missing init.lua"),
                 })?;
             let name: Arc<str> = Arc::from(builtin.as_str());
-            let opts = config
+            let mut opts = config
                 .opts
                 .get(builtin.as_str())
                 .cloned()
-                .map(Arc::new)
                 .unwrap_or_default();
+            if builtin == "edit" {
+                opts.insert(
+                    "hashline_edit".to_owned(),
+                    serde_json::Value::Bool(config.hashline_edit),
+                );
+            }
+            let opts = Arc::new(opts);
             self.send_load(
                 name,
                 init.to_owned(),

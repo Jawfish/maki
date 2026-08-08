@@ -261,6 +261,9 @@ impl RawConfig {
             .filter(|(_, cfg)| cfg.enabled == Some(false))
             .map(|(name, _)| name.clone())
             .collect();
+        let hashline_edit = self.agent.hashline_edit.unwrap_or(true);
+        let mut plugins = PluginsConfig::from_plugins(self.plugins);
+        plugins.hashline_edit = hashline_edit;
         Ok(Config {
             always_yolo: self.always_yolo.unwrap_or(false),
             always_fast: self.always_fast.unwrap_or(false),
@@ -274,7 +277,7 @@ impl RawConfig {
             provider: ProviderConfig::from_file(self.provider),
             storage: StorageConfig::from_file(self.storage),
             permissions: PermissionsConfig::default(),
-            plugins: PluginsConfig::from_plugins(self.plugins),
+            plugins,
         })
     }
 
@@ -1124,6 +1127,7 @@ impl StorageConfig {
 pub struct PluginsConfig {
     pub enabled: bool,
     pub names: Vec<String>,
+    pub hashline_edit: bool,
     /// Per-plugin option tables, without `enabled`. Each plugin validates its
     /// own via `maki.api.register_options` at load time.
     pub opts: HashMap<String, JsonMap<String, JsonValue>>,
@@ -1156,6 +1160,7 @@ impl PluginsConfig {
         Self {
             enabled: true,
             names: all,
+            hashline_edit: true,
             opts,
         }
     }

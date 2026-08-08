@@ -21,6 +21,10 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 - Use replace_all for renaming across a file.
 ]]
 
+local HASHLINE_DESCRIPTION = [[Edit one revision-tagged file with line operations.
+
+Use the tag from `read` or the previous `edit` result. Every operation addresses the original tagged line numbers. Use `PUT N.=M:` followed by `+TEXT` rows to replace, `CUT N.=M` to delete, and `PUT <N:` or `PUT >N:` to insert. Use `<1` for the head and `>$` for the tail. A stale tag or no-op fails: re-read and author a new patch.]]
+
 local MULTIEDIT_DESCRIPTION = [[Make multiple find-and-replace edits to a single file atomically.
 Prefer this over edit when making multiple changes to the same file.
 
@@ -233,6 +237,7 @@ local function diff_result(edit_result, summary)
 end
 
 local opts = maki.api.register_options({
+  hashline_edit = { default = true, desc = "Use revision-tagged hashline editing." },
   multiedit = { default = true, desc = "Provide the `multiedit` tool." },
   edit_lines = { default = false, desc = "Provide the opt-in `edit_lines` tool." },
   insert_lines = { default = false, desc = "Provide the opt-in `insert_lines` tool." },
@@ -244,7 +249,48 @@ local function register_tool_if(enabled, tool)
   end
 end
 
-maki.api.register_tool({
+register_tool_if(opts.hashline_edit, {
+  name = "edit",
+  kind = "edit",
+  mutable_path = "path",
+  permission_scopes = "path",
+  audiences = { "main", "general_sub", "interpreter" },
+  description = HASHLINE_DESCRIPTION,
+
+  schema = {
+    type = "object",
+    properties = {
+      path = {
+        type = "string",
+        description = "Absolute path to the file",
+        required = true,
+        alias = "file_path",
+      },
+      tag = {
+        type = "string",
+        description = "Revision tag from read or the previous edit result",
+        required = true,
+      },
+      patch = {
+        type = "string",
+        description = "Hashline PUT/CUT operations against the tagged revision",
+        required = true,
+      },
+    },
+  },
+
+  header = edit_header,
+  handler = function(input, ctx)
+    local path = maki.fs.abspath(input.path)
+    local result, err = ctx:apply_hashline_edit(path, input.tag, input.patch)
+    if not result then
+      return { llm_output = err, is_error = true }
+    end
+    return diff_result(result, "edited " .. shorten_path(path) .. "\ntag: " .. result.tag)
+  end,
+})
+
+register_tool_if(not opts.hashline_edit, {
   name = "edit",
   kind = "edit",
   mutable_path = "path",
@@ -295,7 +341,7 @@ maki.api.register_tool({
   end,
 })
 
-register_tool_if(opts.multiedit, {
+register_tool_if(not opts.hashline_edit and opts.multiedit, {
   name = "multiedit",
   kind = "edit",
   mutable_path = "path",
@@ -381,7 +427,7 @@ register_tool_if(opts.multiedit, {
   end,
 })
 
-register_tool_if(opts.edit_lines, {
+register_tool_if(not opts.hashline_edit and opts.edit_lines, {
   name = "edit_lines",
   kind = "edit",
   mutable_path = "path",
@@ -435,7 +481,7 @@ register_tool_if(opts.edit_lines, {
   end,
 })
 
-register_tool_if(opts.insert_lines, {
+register_tool_if(not opts.hashline_edit and opts.insert_lines, {
   name = "insert_lines",
   kind = "edit",
   mutable_path = "path",

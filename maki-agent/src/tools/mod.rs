@@ -14,7 +14,7 @@ pub mod registry;
 pub mod schema;
 
 pub use file_tracker::FileReadTracker;
-pub use hashline::{HashlineState, Snapshot, WrittenSnapshot};
+pub use hashline::{EditResult, HashlineState, Snapshot, WrittenSnapshot};
 pub use registry::{
     BoxFuture, ExecFuture, HeaderFuture, HeaderResult, ParseError, PermissionScopes,
     RegisteredTool, RegistryError, Tool, ToolAudience, ToolExecResult, ToolInvocation,

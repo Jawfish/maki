@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use async_lock::{Mutex as AsyncMutex, MutexGuardArc};
 use sha2::{Digest, Sha256};
 
+use super::hashline_patch::{apply_patch, parse_patch};
+
 const BOM: &str = "\u{feff}";
 const DEFAULT_MAX_VERSIONS_PER_PATH: usize = 8;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
@@ -45,6 +47,13 @@ pub struct Snapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrittenSnapshot {
     pub bytes: usize,
+    pub snapshot: Snapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EditResult {
+    pub before: Arc<str>,
+    pub after: Arc<str>,
     pub snapshot: Snapshot,
 }
 
@@ -168,6 +177,50 @@ impl HashlineState {
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone();
         lock.lock_arc().await
+    }
+
+    pub async fn edit(&self, path: &Path, tag: &str, patch: &str) -> Result<EditResult, String> {
+        let snapshot = self.get(path, tag).ok_or_else(|| {
+            format!(
+                "unknown or expired tag {tag} for {}; re-read the file and author a new patch",
+                path.display()
+            )
+        })?;
+        let _guard = self.lock_path(path).await;
+        let bytes = fs::read(path).map_err(|error| format!("read error: {error}"))?;
+        let current = String::from_utf8(bytes).map_err(|_| {
+            format!(
+                "non-utf8 content: {}; re-read cannot proceed",
+                path.display()
+            )
+        })?;
+        let (before, format) = normalize(&current);
+        let current_tag = content_tag(&before);
+        if current_tag != tag || before.as_str() != snapshot.content.as_ref() {
+            return Err(format!(
+                "stale tag {tag} for {} (current tag {current_tag}); re-read the file and author a new patch",
+                path.display()
+            ));
+        }
+        let edits = parse_patch(patch).map_err(|error| error.to_string())?;
+        let after = apply_patch(&before, &edits).map_err(|error| error.to_string())?;
+        if after == before {
+            return Err(format!(
+                "patch makes no changes to {}; re-read the file instead of retrying the same patch",
+                path.display()
+            ));
+        }
+
+        let restored = format.restore(&after).into_bytes();
+        let writer = Arc::clone(&self.writer);
+        let write_path = path.to_path_buf();
+        smol::unblock(move || writer(&write_path, &restored)).await?;
+        let written = self.record_normalized(path, after.clone(), format);
+        Ok(EditResult {
+            before: Arc::from(before),
+            after: Arc::from(after),
+            snapshot: written,
+        })
     }
 
     pub async fn write(&self, path: &Path, content: &str) -> Result<WrittenSnapshot, String> {
@@ -330,6 +383,111 @@ mod tests {
             assert!(attempted.load(Ordering::SeqCst));
             assert_eq!(fs::read_to_string(&path).unwrap(), "before");
             assert!(state.get(&path, &content_tag("after")).is_none());
+        });
+    }
+
+    #[test]
+    fn edit_rejects_stale_same_mtime_content_and_invalid_utf8() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\ntwo\n").unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, "one\ntwo\n");
+            let modified = fs::metadata(&path).unwrap().modified().unwrap();
+            fs::write(&path, "one\nchanged\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+
+            let error = state
+                .edit(&path, &snapshot.tag, "PUT 2.=2:\n+new")
+                .await
+                .unwrap_err();
+            assert!(error.contains("stale tag"), "got: {error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "one\nchanged\n");
+
+            fs::write(&path, [0xff]).unwrap();
+            let error = state
+                .edit(&path, &snapshot.tag, "PUT 2.=2:\n+new")
+                .await
+                .unwrap_err();
+            assert!(error.contains("non-utf8 content"), "got: {error}");
+        });
+    }
+
+    #[test]
+    fn concurrent_edits_serialize_and_second_tag_fails_stale() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\n").unwrap();
+            let state = Arc::new(HashlineState::new());
+            let tag = state.record(&path, "one\n").tag;
+            let first = {
+                let state = Arc::clone(&state);
+                let path = path.clone();
+                let tag = tag.clone();
+                smol::spawn(async move { state.edit(&path, &tag, "PUT 1.=1:\n+first").await })
+            };
+            let second = {
+                let state = Arc::clone(&state);
+                let path = path.clone();
+                smol::spawn(async move { state.edit(&path, &tag, "PUT 1.=1:\n+second").await })
+            };
+            let (first, second) = futures_lite::future::zip(first, second).await;
+            assert!(first.is_ok() ^ second.is_ok());
+            assert!(first.is_err() || second.is_err());
+            let content = fs::read_to_string(&path).unwrap();
+            assert!(content == "first\n" || content == "second\n");
+        });
+    }
+
+    #[test]
+    fn failed_edit_write_leaves_file_and_snapshot_unchanged() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "before\n").unwrap();
+            let state = HashlineState::with_writer(Arc::new(|_, _| Err("injected failure".into())));
+            let snapshot = state.record(&path, "before\n");
+
+            let error = state
+                .edit(&path, &snapshot.tag, "PUT 1.=1:\n+after")
+                .await
+                .unwrap_err();
+            assert_eq!(error, "injected failure");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "before\n");
+            assert!(state.get(&path, &content_tag("after\n")).is_none());
+        });
+    }
+
+    #[test]
+    fn edit_chains_tags_and_rejects_no_op() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\ntwo\n").unwrap();
+            let state = HashlineState::new();
+            let initial = state.record(&path, "one\ntwo\n");
+            let first = state
+                .edit(&path, &initial.tag, "PUT 2.=2:\n+second")
+                .await
+                .unwrap();
+            let second = state
+                .edit(&path, &first.snapshot.tag, "PUT >2:\n+three")
+                .await
+                .unwrap();
+            assert_eq!(&*second.after, "one\nsecond\nthree\n");
+
+            let error = state
+                .edit(&path, &second.snapshot.tag, "PUT 2.=2:\n+second")
+                .await
+                .unwrap_err();
+            assert!(error.contains("no changes"), "got: {error}");
         });
     }
 

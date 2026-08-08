@@ -258,16 +258,23 @@ fn exec_with_ctx(
     input: serde_json::Value,
     ctx: &ToolContext,
 ) -> Result<String, String> {
+    exec_output_with_ctx(reg, name, input, ctx).map(|out| match out {
+        maki_agent::ToolOutput::Plain(s) => s.text,
+        other => panic!("unexpected output: {other:?}"),
+    })
+}
+
+fn exec_output_with_ctx(
+    reg: &ToolRegistry,
+    name: &str,
+    input: serde_json::Value,
+    ctx: &ToolContext,
+) -> Result<maki_agent::ToolOutput, String> {
     let entry = reg
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
     let inv = entry.tool.parse(&input).expect("parse failed");
-    smol::block_on(async { inv.execute(ctx).await })
-        .output
-        .map(|out| match out {
-            maki_agent::ToolOutput::Plain(s) => s.text,
-            other => panic!("unexpected output: {other:?}"),
-        })
+    smol::block_on(async { inv.execute(ctx).await }).output
 }
 
 /// The point of the whole thing: a handler learns who called it without
@@ -2325,6 +2332,7 @@ fn edit_sub_tools_follow_edit_opts(opts: serde_json::Value, on: &[&str], off: &[
     let config = PluginsConfig {
         enabled: true,
         names: vec!["edit".to_owned()],
+        hashline_edit: false,
         opts: HashMap::from([("edit".to_owned(), json_obj(opts))]),
     };
     host.load_builtins(&config).unwrap();
@@ -2391,6 +2399,7 @@ fn disabled_plugin_opts_are_ignored_not_rejected() {
     let config = PluginsConfig {
         enabled: true,
         names: vec!["grep".to_owned()],
+        hashline_edit: true,
         opts: HashMap::from([(
             "bash".to_owned(),
             json_obj(serde_json::json!({ "timeout_secs": 180 })),
@@ -3878,6 +3887,82 @@ mod read_tool_required_params {
         ctx.config.hashline_edit = false;
         let disabled = exec_with_ctx(&reg, "read", input, &ctx).unwrap();
         assert_eq!(disabled, "1: one\n2: two");
+    }
+
+    #[test]
+    fn hashline_edit_chains_tags_and_returns_diff() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edited.txt");
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        let read = exec_with_ctx(
+            &reg,
+            "read",
+            serde_json::json!({ "path": path, "offset": 1, "limit": 10 }),
+            &ctx,
+        )
+        .unwrap();
+        let tag = read
+            .lines()
+            .next()
+            .unwrap()
+            .trim_end_matches(']')
+            .rsplit_once('#')
+            .unwrap()
+            .1;
+
+        let first = exec_output_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "path": path, "tag": tag, "patch": "PUT 2.=2:\n+second" }),
+            &ctx,
+        )
+        .unwrap();
+        let maki_agent::ToolOutput::Diff {
+            before,
+            after,
+            summary,
+            ..
+        } = first
+        else {
+            panic!("edit should return a diff");
+        };
+        assert_eq!(before, "one\ntwo\n");
+        assert_eq!(after, "one\nsecond\n");
+        let tag = summary
+            .lines()
+            .find_map(|line| line.strip_prefix("tag: "))
+            .unwrap();
+        let second = exec_output_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "path": path, "tag": tag, "patch": "PUT >2:\n+three" }),
+            &ctx,
+        )
+        .unwrap();
+        assert!(matches!(second, maki_agent::ToolOutput::Diff { .. }));
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "one\nsecond\nthree\n"
+        );
+    }
+
+    #[test]
+    fn hashline_tool_listing_swaps_with_fuzzy_tools() {
+        let (reg, _host) = builtins_host();
+        assert!(reg.get("edit").is_some());
+        for tool in ["multiedit", "edit_lines", "insert_lines"] {
+            assert!(reg.get(tool).is_none(), "{tool} should be hidden");
+        }
+
+        let reg = fresh_registry();
+        let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        let mut config = PluginsConfig::from_plugins(HashMap::new());
+        config.hashline_edit = false;
+        host.load_builtins(&config).unwrap();
+        assert!(reg.get("edit").is_some());
+        assert!(reg.get("multiedit").is_some());
     }
 
     #[test]

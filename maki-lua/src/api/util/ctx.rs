@@ -342,6 +342,27 @@ impl UserData for LuaCtx {
         );
 
         methods.add_async_method(
+            "apply_hashline_edit",
+            |lua, this, (path, tag, patch): (String, String, String)| async move {
+                let Some(agent) = this.agent() else {
+                    return Ok(this.cap_err_pair("apply_hashline_edit"));
+                };
+                match agent.hashline.edit(Path::new(&path), &tag, &patch).await {
+                    Ok(edit) => {
+                        agent.file_tracker.record_read(Path::new(&path));
+                        let result = lua.create_table()?;
+                        result.set("path", path)?;
+                        result.set("tag", edit.snapshot.tag)?;
+                        result.set("before", edit.before.as_ref())?;
+                        result.set("after", edit.after.as_ref())?;
+                        Ok((Some(result), None))
+                    }
+                    Err(error) => Ok((None, Some(error))),
+                }
+            },
+        );
+
+        methods.add_async_method(
             "atomic_write_snapshot",
             |lua, this, (path, content): (String, String)| async move {
                 let Some(agent) = this.agent() else {
