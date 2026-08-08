@@ -2535,6 +2535,18 @@ fn open_model_picker_sends_ui_action() {
     assert!(matches!(action, maki_lua::UiAction::OpenModelPicker));
 }
 
+#[test]
+fn compact_sends_ui_action() {
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    host.load_source("p", "maki.ui.compact()").unwrap();
+
+    let action = host
+        .ui_action_rx()
+        .recv_timeout(Duration::from_secs(5))
+        .expect("compact action was not sent");
+    assert!(matches!(action, maki_lua::UiAction::Compact));
+}
+
 #[test_case::test_case(
     r#"maki.api.register_command({ name = "", handler = function() end })"#,
     "non-empty" ; "empty_name"

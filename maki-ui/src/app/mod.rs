@@ -1197,6 +1197,15 @@ impl App {
         idx
     }
 
+    pub fn compact(&mut self) -> Vec<Action> {
+        if self.status == Status::Streaming {
+            self.queue_compact();
+            return vec![];
+        }
+        self.status = Status::Streaming;
+        vec![Action::Compact]
+    }
+
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.discard();
         match cmd.name.as_str() {
@@ -1204,14 +1213,7 @@ impl App {
                 self.open_tasks();
                 vec![]
             }
-            "/compact" => {
-                if self.status == Status::Streaming {
-                    self.queue_compact();
-                    return vec![];
-                }
-                self.status = Status::Streaming;
-                vec![Action::Compact]
-            }
+            "/compact" => self.compact(),
             "/help" => {
                 self.help_modal.toggle();
                 vec![]

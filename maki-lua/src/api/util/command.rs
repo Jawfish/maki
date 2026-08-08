@@ -430,6 +430,7 @@ pub enum UiAction {
         reply_tx: flume::Sender<i32>,
     },
     OpenModelPicker,
+    Compact,
     Session {
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,

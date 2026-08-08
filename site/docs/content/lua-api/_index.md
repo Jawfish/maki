@@ -4164,6 +4164,23 @@ maki.ui.open_model_picker()
 
 ---
 
+### `maki.ui.compact()` {#maki-ui-compact}
+
+```lua
+maki.ui.compact()
+```
+
+Compacts the focused session's conversation history. Starts compaction
+immediately when idle, or queues it after the current response finishes.
+
+**Example:**
+
+```lua
+maki.ui.compact()
+```
+
+---
+
 ### `maki.ui.open_editor()` {#maki-ui-open_editor}
 
 ```lua
