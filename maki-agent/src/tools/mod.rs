@@ -7,6 +7,7 @@
 
 mod file_tracker;
 pub mod grep;
+pub mod hashline_patch;
 pub mod interpreter_bridge;
 pub mod registry;
 pub mod schema;
