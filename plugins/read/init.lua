@@ -106,6 +106,13 @@ local function read_file(path, offset, limit, ctx)
     return { llm_output = "read error: " .. tostring(err), is_error = true }
   end
 
+  local hashline = ctx:config("hashline_edit", true)
+  local tag
+  if hashline then
+    tag = ctx:record_snapshot(path, content)
+    content = content:gsub("^\239\187\191", ""):gsub("\r\n", "\n")
+  end
+
   local all_lines = {}
   local pos = 1
   while pos <= #content do
@@ -133,6 +140,9 @@ local function read_file(path, offset, limit, ctx)
     parts[#parts + 1] = (start + i - 1) .. ": " .. line
   end
   local llm_output = table.concat(parts, "\n")
+  if hashline then
+    llm_output = string.format("[%s#%s]\n%s", path, tag, llm_output)
+  end
 
   local trunc_start = start + #lines
   if trunc_start <= total_lines then

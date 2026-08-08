@@ -14,8 +14,8 @@ use maki_agent::tools::interpreter_bridge;
 use maki_agent::tools::registry::ToolRegistry;
 use maki_agent::tools::schema::sanitize_tool_input_schema;
 use maki_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
-    ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, HashlineState, LocalToolFn, LocalTools,
+    ToolAudience, ToolContext, ToolFilter, ToolLive,
 };
 use maki_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -525,6 +525,7 @@ async fn session(
             mailbox: None,
             timeouts: agent_ctx.timeouts,
             file_tracker: FileReadTracker::fresh(),
+            hashline: Arc::new(HashlineState::new()),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
             registry: Arc::clone(maki_agent::tools::ToolRegistry::global_arc()),

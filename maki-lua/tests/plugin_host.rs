@@ -3856,6 +3856,48 @@ mod read_tool_required_params {
     }
 
     #[test]
+    fn hashline_header_is_stable_and_option_can_disable_it() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tagged.txt");
+        std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
+        let input = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "offset": 1,
+            "limit": 10
+        });
+        let first = exec_tool(&reg, "read", input.clone()).unwrap();
+        let second = exec_tool(&reg, "read", input.clone()).unwrap();
+        assert_eq!(first.lines().next(), second.lines().next());
+        assert!(
+            first.lines().next().unwrap().ends_with(']'),
+            "missing hashline header: {first}"
+        );
+
+        let mut ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        ctx.config.hashline_edit = false;
+        let disabled = exec_with_ctx(&reg, "read", input, &ctx).unwrap();
+        assert_eq!(disabled, "1: one\n2: two");
+    }
+
+    #[test]
+    fn hashline_write_returns_tag_and_disabled_result_is_unchanged() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("written.txt");
+        let input = serde_json::json!({ "path": path, "content": "content\n" });
+        let enabled = exec_tool(&reg, "write", input.clone()).unwrap();
+        let tag = enabled.lines().nth(1).expect("write should return tag");
+        assert!(tag.starts_with("tag: "));
+        assert_eq!(tag.len(), 21);
+
+        let mut ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        ctx.config.hashline_edit = false;
+        let disabled = exec_with_ctx(&reg, "write", input, &ctx).unwrap();
+        assert!(!disabled.contains("tag:"));
+    }
+
+    #[test]
     fn offset_beyond_file_returns_empty() {
         let (reg, _host) = builtins_host();
         let dir = tempfile::tempdir().unwrap();
@@ -3873,8 +3915,8 @@ mod read_tool_required_params {
         );
         let out = out.expect("read should succeed");
         assert!(
-            out.is_empty(),
-            "offset beyond file should return empty, got: {out}"
+            out.lines().count() == 1 && out.starts_with('[') && out.trim_end().ends_with(']'),
+            "offset beyond file should return only the hashline header, got: {out}"
         );
     }
 }

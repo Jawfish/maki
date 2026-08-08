@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use maki_agent::agent::LoadedInstructions;
 use maki_agent::cancel::CancelToken;
 use maki_agent::tools::{
-    Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolLive,
+    Deadline, FileReadTracker, HashlineState, LocalTools, ToolAudience, ToolContext, ToolLive,
 };
 use maki_config::{AgentConfig, ToolOutputLines};
 use maki_storage::id::SessionRef;
@@ -196,6 +196,10 @@ impl LuaCtx {
         self.agent().map(|a| &*a.file_tracker)
     }
 
+    fn hashline(&self) -> Option<&HashlineState> {
+        self.agent().map(|agent| &*agent.hashline)
+    }
+
     fn loaded_instructions(&self) -> Option<&LoadedInstructions> {
         match &self.caps {
             Caps::Handler {
@@ -325,6 +329,36 @@ impl UserData for LuaCtx {
             tracker.record_read(Path::new(&path));
             Ok((Some(true), None))
         });
+
+        methods.add_method(
+            "record_snapshot",
+            |_, this, (path, content): (String, String)| {
+                let Some(hashline) = this.hashline() else {
+                    return Ok(this.cap_err_pair("record_snapshot"));
+                };
+                let snapshot = hashline.record(Path::new(&path), &content);
+                Ok((Some(snapshot.tag), None))
+            },
+        );
+
+        methods.add_async_method(
+            "atomic_write_snapshot",
+            |lua, this, (path, content): (String, String)| async move {
+                let Some(agent) = this.agent() else {
+                    return Ok(this.cap_err_pair("atomic_write_snapshot"));
+                };
+                match agent.hashline.write(Path::new(&path), &content).await {
+                    Ok(written) => {
+                        agent.file_tracker.record_read(Path::new(&path));
+                        let result = lua.create_table()?;
+                        result.set("tag", written.snapshot.tag)?;
+                        result.set("bytes", written.bytes)?;
+                        Ok((Some(result), None))
+                    }
+                    Err(error) => Ok((None, Some(error))),
+                }
+            },
+        );
 
         methods.add_method("check_before_edit", |_, this, path: String| {
             let Some(agent) = this.agent() else {

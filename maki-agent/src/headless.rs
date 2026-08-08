@@ -19,7 +19,9 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::permissions::PermissionManager;
 use crate::prompt::ResolvedSlots;
 use crate::template;
-use crate::tools::{DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry};
+use crate::tools::{
+    DescriptionContext, FileReadTracker, HashlineState, ToolAudience, ToolFilter, ToolRegistry,
+};
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
     EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, SessionMailbox, ToolOutput,
@@ -216,6 +218,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     mailbox: Some(mailbox.clone()),
                     timeouts: params.timeouts,
                     file_tracker: FileReadTracker::fresh(),
+                    hashline: Arc::new(HashlineState::new()),
                     prompt_slots: Arc::new(params.prompt_slots),
                     subagent_cancels: Arc::new(CancelMap::new()),
                     registry: Arc::clone(ToolRegistry::global_arc()),
@@ -340,6 +343,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
 
     let answer_rx = Arc::new(Mutex::new(answer_rx));
     let file_tracker = FileReadTracker::fresh();
+    let hashline = Arc::new(HashlineState::new());
 
     let session_ref_clone = session_ref.clone();
     let task = smol::spawn({
@@ -430,6 +434,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         mailbox: Some(mailbox.clone()),
                         timeouts: params.timeouts,
                         file_tracker: Arc::clone(&file_tracker),
+                        hashline: Arc::clone(&hashline),
                         prompt_slots: Arc::clone(&params.prompt_slots),
                         subagent_cancels: Arc::new(CancelMap::new()),
                         registry: Arc::clone(ToolRegistry::global_arc()),

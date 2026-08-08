@@ -459,6 +459,7 @@ pub struct AgentFileConfig {
     pub max_continuation_turns: Option<u32>,
     pub compaction_buffer: Option<CompactionBuffer>,
     pub stale_read_check: Option<bool>,
+    pub hashline_edit: Option<bool>,
 }
 
 impl AgentFileConfig {
@@ -470,7 +471,8 @@ impl AgentFileConfig {
             max_output_lines,
             max_continuation_turns,
             compaction_buffer,
-            stale_read_check
+            stale_read_check,
+            hashline_edit
         );
     }
 }
@@ -988,6 +990,12 @@ pub struct AgentConfig {
     )]
     pub stale_read_check: bool,
 
+    #[config(
+        default = true,
+        desc = "Use revision-tagged reads and hashline editing"
+    )]
+    pub hashline_edit: bool,
+
     #[config(skip, default = false)]
     pub no_rtk: bool,
 
@@ -1012,6 +1020,7 @@ impl AgentConfig {
                 .unwrap_or(DEFAULT_MAX_CONTINUATION_TURNS),
             compaction_buffer: file.compaction_buffer.unwrap_or(DEFAULT_COMPACTION_BUFFER),
             stale_read_check: file.stale_read_check.unwrap_or(true),
+            hashline_edit: file.hashline_edit.unwrap_or(true),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,

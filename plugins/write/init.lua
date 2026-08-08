@@ -85,16 +85,24 @@ maki.api.register_tool({
       maki.fs.mkdir(parent, { parents = true })
     end
 
-    local _, write_err = maki.fs.write(path, content)
+    local hashline = ctx:config("hashline_edit", true)
+    local result, write_err
+    if hashline then
+      result, write_err = ctx:atomic_write_snapshot(path, content)
+    else
+      _, write_err = maki.fs.write(path, content)
+      ctx:record_read(path)
+    end
     if write_err then
       return { llm_output = "write error: " .. tostring(write_err), is_error = true }
     end
 
-    ctx:record_read(path)
-
-    local byte_count = #content
+    local byte_count = hashline and result.bytes or #content
     local rel = shorten_path(path)
     local llm_output = string.format("wrote %d bytes to %s", byte_count, rel)
+    if hashline then
+      llm_output = llm_output .. "\ntag: " .. result.tag
+    end
     local annotation = string.format("%d bytes", byte_count)
 
     return {

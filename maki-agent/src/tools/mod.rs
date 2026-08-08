@@ -7,12 +7,14 @@
 
 mod file_tracker;
 pub mod grep;
+pub mod hashline;
 pub mod hashline_patch;
 pub mod interpreter_bridge;
 pub mod registry;
 pub mod schema;
 
 pub use file_tracker::FileReadTracker;
+pub use hashline::{HashlineState, Snapshot, WrittenSnapshot};
 pub use registry::{
     BoxFuture, ExecFuture, HeaderFuture, HeaderResult, ParseError, PermissionScopes,
     RegisteredTool, RegistryError, Tool, ToolAudience, ToolExecResult, ToolInvocation,
@@ -210,6 +212,7 @@ pub struct ToolContext {
     pub permissions: Arc<PermissionManager>,
     pub timeouts: maki_providers::Timeouts,
     pub file_tracker: Arc<FileReadTracker>,
+    pub hashline: Arc<HashlineState>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub opts: RequestOptions,
     pub subagent_cancels: Arc<CancelMap<String>>,
@@ -432,6 +435,7 @@ pub fn interpreter_ctx(
         permissions,
         timeouts: maki_providers::Timeouts::default(),
         file_tracker,
+        hashline: Arc::new(HashlineState::new()),
         prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
         opts: RequestOptions::default(),
         subagent_cancels: Arc::new(CancelMap::new()),

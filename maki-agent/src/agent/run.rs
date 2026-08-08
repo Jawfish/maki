@@ -17,7 +17,9 @@ use super::tool_dispatch::{self, RecentCalls};
 use crate::cancel::{CancelMap, CancelToken};
 use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
-use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
+use crate::tools::{
+    Deadline, FileReadTracker, HashlineState, LocalTools, ToolAudience, ToolContext,
+};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
     InterruptSource, SessionMailbox, TurnCompleteEvent,
@@ -61,6 +63,7 @@ pub struct AgentParams {
     pub mailbox: Option<SessionMailbox>,
     pub timeouts: maki_providers::Timeouts,
     pub file_tracker: Arc<FileReadTracker>,
+    pub hashline: Arc<HashlineState>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub subagent_cancels: Arc<CancelMap<String>>,
     pub registry: Arc<crate::tools::ToolRegistry>,
@@ -103,6 +106,7 @@ pub struct Agent<'h> {
     mailbox: Option<SessionMailbox>,
     timeouts: maki_providers::Timeouts,
     file_tracker: Arc<FileReadTracker>,
+    hashline: Arc<HashlineState>,
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
     registry: Arc<crate::tools::ToolRegistry>,
@@ -142,6 +146,7 @@ impl<'h> Agent<'h> {
             session_id: params.session_id,
             mailbox: params.mailbox,
             file_tracker: params.file_tracker,
+            hashline: params.hashline,
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
             registry: params.registry,
@@ -449,6 +454,7 @@ impl<'h> Agent<'h> {
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
             file_tracker: Arc::clone(&self.file_tracker),
+            hashline: Arc::clone(&self.hashline),
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts,
             subagent_cancels: Arc::clone(&self.subagent_cancels),
@@ -672,6 +678,7 @@ mod tests {
                 mailbox: None,
                 timeouts: maki_providers::Timeouts::default(),
                 file_tracker: FileReadTracker::fresh(),
+                hashline: Arc::new(HashlineState::new()),
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
                 registry: Arc::new(crate::tools::ToolRegistry::new()),
@@ -1052,6 +1059,7 @@ mod tests {
                     mailbox: None,
                     timeouts: maki_providers::Timeouts::default(),
                     file_tracker: FileReadTracker::fresh(),
+                    hashline: Arc::new(HashlineState::new()),
                     prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                     subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
                     registry: Arc::new(crate::tools::ToolRegistry::new()),

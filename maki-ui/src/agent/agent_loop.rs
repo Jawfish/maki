@@ -8,7 +8,7 @@ use maki_agent::permissions::PermissionManager;
 use maki_agent::template;
 use maki_agent::template::Vars;
 use maki_agent::tools::{
-    DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry,
+    DescriptionContext, FileReadTracker, HashlineState, ToolAudience, ToolFilter, ToolRegistry,
 };
 use maki_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -39,6 +39,7 @@ pub(super) struct AgentLoop {
     init_cancel: CancelToken,
     permissions: Arc<PermissionManager>,
     file_tracker: Arc<FileReadTracker>,
+    hashline: Arc<HashlineState>,
     min_run_id: u64,
     agent_tx: flume::Sender<Envelope>,
     answer_rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
@@ -87,6 +88,7 @@ impl AgentLoop {
             init_cancel,
             permissions,
             file_tracker: FileReadTracker::fresh(),
+            hashline: Arc::new(HashlineState::new()),
             min_run_id: 0,
             agent_tx,
             answer_rx: Arc::new(async_lock::Mutex::new(answer_rx)),
@@ -235,6 +237,7 @@ impl AgentLoop {
                 mailbox: self.mailbox.clone(),
                 timeouts: self.timeouts,
                 file_tracker: Arc::clone(&self.file_tracker),
+                hashline: Arc::clone(&self.hashline),
                 prompt_slots: Arc::new(prompt_slots),
                 subagent_cancels: Arc::clone(&self.subagent_cancels),
                 registry: Arc::clone(maki_agent::tools::ToolRegistry::global_arc()),
