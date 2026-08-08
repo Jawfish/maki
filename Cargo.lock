@@ -2702,6 +2702,7 @@ name = "maki-tree-sitter"
 version = "0.4.5"
 dependencies = [
  "test-case",
+ "thiserror 2.0.18",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",

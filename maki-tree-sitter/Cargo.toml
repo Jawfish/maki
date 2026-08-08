@@ -41,6 +41,7 @@ tree-sitter-typescript = { workspace = true }
 tree-sitter-yaml = { workspace = true }
 tree-sitter-zig = { workspace = true }
 tree-sitter-containerfile = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

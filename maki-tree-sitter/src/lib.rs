@@ -1,3 +1,7 @@
+mod resolver;
+
+pub use resolver::{BlockResolveError, resolve_block};
+
 use tree_sitter::Language as TsLanguage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
