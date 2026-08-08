@@ -239,7 +239,9 @@ fn load_registry_with_builtins() -> (Arc<ToolRegistry>, HashSet<String>) {
         edit.opts.insert(sub.to_owned(), Value::Bool(true));
     }
     plugins.insert("edit".to_owned(), edit);
-    host.load_builtins(&PluginsConfig::from_plugins(plugins))
+    let mut config = PluginsConfig::from_plugins(plugins);
+    config.hashline_edit = false;
+    host.load_builtins(&config)
         .expect("loading builtin plugins");
 
     let opt_in = host

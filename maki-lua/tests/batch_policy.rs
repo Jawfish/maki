@@ -1016,7 +1016,10 @@ fn header_click_toggles_all_children() {
 #[test]
 fn edit_child_body_renders_diff_not_summary() {
     let reg = Arc::new(ToolRegistry::new());
-    let host = PluginHost::with_all_builtins(Arc::clone(&reg)).unwrap();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let mut config = maki_config::PluginsConfig::from_plugins(Default::default());
+    config.hashline_edit = false;
+    host.load_builtins(&config).unwrap();
     let lines = restore_snapshot_lines(
         &host,
         json!({ "tool_calls": [{ "tool": "edit", "parameters": {

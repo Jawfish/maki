@@ -231,7 +231,11 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
     let path = dir.path().join("f.rs");
     std::fs::write(&path, "top\nzzz\nn1\nn2\nn3\nn4\nn5\nbottom\n").unwrap();
 
-    let host = PluginHost::with_all_builtins(Arc::new(ToolRegistry::new())).unwrap();
+    let reg = Arc::new(ToolRegistry::new());
+    let mut host = PluginHost::new(reg).unwrap();
+    let mut config = maki_config::PluginsConfig::from_plugins(Default::default());
+    config.hashline_edit = false;
+    host.load_builtins(&config).unwrap();
     let input = json!({ "tool_calls": [{ "tool": "multiedit", "parameters": {
         "path": path.to_str().unwrap(),
         "edits": [{ "old_string": "old1\nold2\nold3\nold4\nold5", "new_string": "n1\nn2\nn3\nn4\nn5" }],
