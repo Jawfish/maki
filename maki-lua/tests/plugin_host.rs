@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use maki_agent::ToolOutput;
 use maki_agent::tools::{
-    DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError, Tool, ToolContext,
-    ToolExecResult, ToolInvocation, ToolLive, ToolRegistry, ToolSource, timeout_annotation,
+    DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError, Tool, ToolAudience,
+    ToolContext, ToolExecResult, ToolFilter, ToolInvocation, ToolLive, ToolRegistry, ToolSource,
+    timeout_annotation,
 };
 use maki_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use maki_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
@@ -3946,6 +3947,82 @@ mod read_tool_required_params {
             std::fs::read_to_string(path).unwrap(),
             "one\nsecond\nthree\n"
         );
+    }
+
+    #[test]
+    fn hashline_dogfoods_twenty_chained_pipeline_edits() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edit-init.lua");
+        let original = include_str!("../../plugins/edit/init.lua");
+        std::fs::write(&path, original).unwrap();
+        let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        let snapshot = ctx.hashline.record(&path, original);
+        let mut tag = snapshot.tag;
+        let mut expected: Vec<String> = original.lines().map(str::to_owned).collect();
+
+        for line in 1..=20 {
+            let replacement = format!("{} -- dogfood edit {line}", expected[line - 1]);
+            let patch = format!("PUT {line}.={line}:\n+{replacement}");
+            let output = exec_output_with_ctx(
+                &reg,
+                "edit",
+                serde_json::json!({ "path": path, "tag": tag, "patch": patch }),
+                &ctx,
+            )
+            .unwrap();
+            let ToolOutput::Diff { after, summary, .. } = output else {
+                panic!("dogfood edit {line} should return a diff");
+            };
+            expected[line - 1] = replacement;
+            let expected_content = format!("{}\n", expected.join("\n"));
+            assert_eq!(
+                after, expected_content,
+                "wrong apply at dogfood edit {line}"
+            );
+            tag = summary
+                .lines()
+                .find_map(|line| line.strip_prefix("tag: "))
+                .expect("each edit should return a fresh tag")
+                .to_owned();
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            format!("{}\n", expected.join("\n"))
+        );
+    }
+
+    #[test]
+    fn hashline_description_is_concise_and_covers_guidance() {
+        let (reg, _host) = builtins_host();
+        let filter = ToolFilter::All;
+        let context = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let edit = reg.get("edit").unwrap();
+        let description = edit.tool.description(&context);
+
+        assert!(
+            description.len() < 4_000,
+            "description is {} bytes",
+            description.len()
+        );
+        for required in [
+            "PUT N.=M:",
+            "CUT N.=M",
+            "+TEXT",
+            "Wrong:",
+            "Right:",
+            "no-op",
+        ] {
+            assert!(
+                description.contains(required),
+                "missing {required:?}: {description}"
+            );
+        }
     }
 
     #[test]

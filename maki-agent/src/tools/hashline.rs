@@ -11,6 +11,8 @@ use super::hashline_patch::{apply_patch, parse_patch};
 const BOM: &str = "\u{feff}";
 const DEFAULT_MAX_VERSIONS_PER_PATH: usize = 8;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+const STALE_WINDOW_RADIUS: usize = 3;
+const NO_OP_LOOP_LIMIT: usize = 3;
 
 pub type ContentTag = String;
 
@@ -70,9 +72,17 @@ struct SnapshotStore {
     next_sequence: u64,
 }
 
+#[derive(Debug)]
+struct NoOpAttempt {
+    tag: String,
+    patch: String,
+    count: usize,
+}
+
 pub struct HashlineState {
     store: Mutex<SnapshotStore>,
     locks: Mutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>,
+    no_op_attempts: Mutex<HashMap<PathBuf, NoOpAttempt>>,
     max_versions_per_path: usize,
     max_total_bytes: usize,
     writer: Arc<AtomicWriter>,
@@ -93,6 +103,7 @@ impl HashlineState {
         Self {
             store: Mutex::new(SnapshotStore::default()),
             locks: Mutex::new(HashMap::new()),
+            no_op_attempts: Mutex::new(HashMap::new()),
             max_versions_per_path,
             max_total_bytes,
             writer: Arc::new(|path, bytes| {
@@ -180,12 +191,8 @@ impl HashlineState {
     }
 
     pub async fn edit(&self, path: &Path, tag: &str, patch: &str) -> Result<EditResult, String> {
-        let snapshot = self.get(path, tag).ok_or_else(|| {
-            format!(
-                "unknown or expired tag {tag} for {}; re-read the file and author a new patch",
-                path.display()
-            )
-        })?;
+        let edits = parse_patch(patch).map_err(|error| error.to_string())?;
+        let snapshot = self.get(path, tag);
         let _guard = self.lock_path(path).await;
         let bytes = fs::read(path).map_err(|error| format!("read error: {error}"))?;
         let current = String::from_utf8(bytes).map_err(|_| {
@@ -196,20 +203,18 @@ impl HashlineState {
         })?;
         let (before, format) = normalize(&current);
         let current_tag = content_tag(&before);
-        if current_tag != tag || before.as_str() != snapshot.content.as_ref() {
-            return Err(format!(
-                "stale tag {tag} for {} (current tag {current_tag}); re-read the file and author a new patch",
-                path.display()
-            ));
+        let is_stale = snapshot.as_ref().is_none_or(|snapshot| {
+            current_tag != tag || before.as_str() != snapshot.content.as_ref()
+        });
+        if is_stale {
+            self.record_normalized(path, before.clone(), format);
+            return Err(stale_error(path, tag, &current_tag, &before, &edits));
         }
-        let edits = parse_patch(patch).map_err(|error| error.to_string())?;
         let after = apply_patch(&before, &edits).map_err(|error| error.to_string())?;
         if after == before {
-            return Err(format!(
-                "patch makes no changes to {}; re-read the file instead of retrying the same patch",
-                path.display()
-            ));
+            return Err(self.no_op_error(path, tag, patch));
         }
+        self.clear_no_op_attempt(path);
 
         let restored = format.restore(&after).into_bytes();
         let writer = Arc::clone(&self.writer);
@@ -225,6 +230,7 @@ impl HashlineState {
 
     pub async fn write(&self, path: &Path, content: &str) -> Result<WrittenSnapshot, String> {
         let _guard = self.lock_path(path).await;
+        self.clear_no_op_attempt(path);
         let (normalized, supplied_format) = normalize(content);
         let format = match fs::read(path) {
             Ok(bytes) => {
@@ -253,6 +259,48 @@ impl HashlineState {
         })
     }
 
+    fn no_op_error(&self, path: &Path, tag: &str, patch: &str) -> String {
+        let path_key = canonical_path(path);
+        let mut attempts = self
+            .no_op_attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let attempt = attempts.entry(path_key).or_insert_with(|| NoOpAttempt {
+            tag: tag.to_owned(),
+            patch: patch.to_owned(),
+            count: 0,
+        });
+        if attempt.tag == tag && attempt.patch == patch {
+            attempt.count += 1;
+        } else {
+            *attempt = NoOpAttempt {
+                tag: tag.to_owned(),
+                patch: patch.to_owned(),
+                count: 1,
+            };
+        }
+        if attempt.count >= NO_OP_LOOP_LIMIT {
+            format!(
+                "hard failure: no-op edit loop for {}: the same payload made no changes {NO_OP_LOOP_LIMIT} times; stop retrying it and inspect the current file",
+                path.display()
+            )
+        } else {
+            format!(
+                "patch makes no changes to {} (identical no-op attempt {}/{}); do not retry this payload: use a different patch or inspect the current file",
+                path.display(),
+                attempt.count,
+                NO_OP_LOOP_LIMIT
+            )
+        }
+    }
+
+    fn clear_no_op_attempt(&self, path: &Path) {
+        self.no_op_attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&canonical_path(path));
+    }
+
     fn evict_to_byte_limit(&self, store: &mut SnapshotStore) {
         while store.total_bytes > self.max_total_bytes {
             let oldest_path = store
@@ -273,6 +321,35 @@ impl HashlineState {
             }
         }
     }
+}
+
+fn stale_error(
+    path: &Path,
+    stale_tag: &str,
+    current_tag: &str,
+    content: &str,
+    edits: &[super::hashline_patch::Edit],
+) -> String {
+    let lines: Vec<_> = content.lines().collect();
+    let anchor = edits
+        .first()
+        .and_then(super::hashline_patch::Edit::anchor)
+        .unwrap_or_else(|| lines.len().max(1));
+    let center = anchor.clamp(1, lines.len().max(1));
+    let start = center.saturating_sub(STALE_WINDOW_RADIUS).max(1);
+    let end = center.saturating_add(STALE_WINDOW_RADIUS).min(lines.len());
+    let window = if lines.is_empty() {
+        "(file is empty)".to_owned()
+    } else {
+        (start..=end)
+            .map(|line| format!("{line}: {}", lines[line - 1]))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "stale tag {stale_tag} for {}. Fresh tag: {current_tag}. Current lines around requested anchor {anchor}:\n{window}\nRe-author the patch against this fresh tag and numbering; do not retry the stale payload.",
+        path.display()
+    )
 }
 
 pub fn normalize(content: &str) -> (String, TextFormat) {
@@ -408,6 +485,12 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(error.contains("stale tag"), "got: {error}");
+            assert!(
+                error.contains(&format!("Fresh tag: {}", content_tag("one\nchanged\n"))),
+                "got: {error}"
+            );
+            assert!(error.contains("1: one\n2: changed"), "got: {error}");
+            assert!(error.contains("requested anchor 2"), "got: {error}");
             assert_eq!(fs::read_to_string(&path).unwrap(), "one\nchanged\n");
 
             fs::write(&path, [0xff]).unwrap();
@@ -488,6 +571,69 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(error.contains("no changes"), "got: {error}");
+        });
+    }
+
+    #[test]
+    fn third_identical_no_op_names_loop_and_changed_payload_resets_count() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\ntwo\n").unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, "one\ntwo\n").tag;
+            let patch = "PUT 2.=2:\n+two";
+
+            for expected_attempt in 1..NO_OP_LOOP_LIMIT {
+                let error = state.edit(&path, &tag, patch).await.unwrap_err();
+                assert!(
+                    error.contains(&format!("identical no-op attempt {expected_attempt}/3")),
+                    "got: {error}"
+                );
+            }
+            let error = state.edit(&path, &tag, patch).await.unwrap_err();
+            assert!(
+                error.contains("hard failure: no-op edit loop"),
+                "got: {error}"
+            );
+            assert!(error.contains("same payload"), "got: {error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+
+            let changed = state
+                .edit(&path, &tag, "PUT 1.=1:\n+one")
+                .await
+                .unwrap_err();
+            assert!(
+                changed.contains("identical no-op attempt 1/3"),
+                "got: {changed}"
+            );
+        });
+    }
+
+    #[test]
+    fn stale_window_centers_first_anchor_and_clamps_to_current_file() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let original = (1..=12)
+                .map(|line| format!("old {line}\n"))
+                .collect::<String>();
+            let current = (1..=12)
+                .map(|line| format!("new {line}\n"))
+                .collect::<String>();
+            fs::write(&path, &original).unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, &original).tag;
+            fs::write(&path, &current).unwrap();
+
+            let error = state
+                .edit(&path, &tag, "PUT 9.=9:\n+replacement")
+                .await
+                .unwrap_err();
+            assert!(error.contains("6: new 6"), "got: {error}");
+            assert!(error.contains("12: new 12"), "got: {error}");
+            assert!(!error.contains("5: new 5"), "got: {error}");
+            assert!(state.get(&path, &content_tag(&current)).is_some());
         });
     }
 

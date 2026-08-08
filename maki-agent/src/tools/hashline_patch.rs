@@ -62,6 +62,15 @@ pub enum Edit {
 }
 
 impl Edit {
+    pub fn anchor(&self) -> Option<usize> {
+        match self {
+            Self::Replace { start, .. } | Self::Cut { start, .. } => Some(*start),
+            Self::InsertBefore { line, .. } | Self::InsertAfter { line, .. } => Some(*line),
+            Self::InsertHead { .. } => Some(1),
+            Self::InsertTail { .. } => None,
+        }
+    }
+
     fn patch_line(&self) -> usize {
         match self {
             Self::Replace { patch_line, .. }

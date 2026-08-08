@@ -21,9 +21,32 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 - Use replace_all for renaming across a file.
 ]]
 
-local HASHLINE_DESCRIPTION = [[Edit one revision-tagged file with line operations.
+local HASHLINE_DESCRIPTION = [[Edit one revision-tagged file atomically with strict line operations.
 
-Use the tag from `read` or the previous `edit` result. Every operation addresses the original tagged line numbers. Use `PUT N.=M:` followed by `+TEXT` rows to replace, `CUT N.=M` to delete, and `PUT <N:` or `PUT >N:` to insert. Use `<1` for the head and `>$` for the tail. A stale tag or no-op fails: re-read and author a new patch.]]
+Use `path` and the 16-character `tag` from `read` or the previous `edit` result. All operations in one patch use the tagged file's original line numbers, so later operations do not shift earlier anchors.
+
+Grammar:
+- Replace inclusive range: `PUT N.=M:` then one or more `+TEXT` rows.
+- Insert before/after: `PUT <N:` or `PUT >N:` then `+TEXT` rows.
+- Insert at file head/tail: `PUT <1:` or `PUT >$:` then `+TEXT` rows.
+- Delete inclusive range: `CUT N.=M` with no body.
+- Put multiple non-overlapping operations in one patch.
+
+Rules:
+- Every body row starts with exactly `+`; the rest is literal file content. Blank inserted lines are `+`.
+- Copy indentation after `+`. Do not include read's `N: ` line-number prefix.
+- Use the smallest exact range. `PUT` must have a non-empty body; use `CUT` to delete.
+- On success, use the returned tag for the next edit. On stale failure, use its fresh tag and numbered anchor window to re-author the patch. Never retry an unchanged no-op payload.
+
+Wrong:
+`PUT 4.=8:\n old context\n-new\n+new` (diff/context rows are invalid)
+`PUT 4.=8:` (empty PUT is not deletion)
+`PUT 4.=40:` to change one line (needlessly widened range)
+
+Right:
+`PUT 6.=6:\n+replacement`
+`CUT 9.=11`
+`PUT >3:\n+new line`]]
 
 local MULTIEDIT_DESCRIPTION = [[Make multiple find-and-replace edits to a single file atomically.
 Prefer this over edit when making multiple changes to the same file.
