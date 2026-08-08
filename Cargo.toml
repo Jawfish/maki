@@ -52,6 +52,7 @@ members = [
   "maki-highlight",
   "maki-interpreter",
   "maki-lua",
+  "maki-tree-sitter",
   "maki-markdown",
   "maki-providers",
   "maki-storage",
@@ -81,6 +82,7 @@ maki-lua = { path = "maki-lua" }
 maki-config-macro = { path = "maki-config-macro" }
 maki-lua-macro = { path = "maki-lua-macro" }
 maki-highlight = { path = "maki-highlight" }
+maki-tree-sitter = { path = "maki-tree-sitter" }
 maki-markdown = { path = "maki-markdown" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
