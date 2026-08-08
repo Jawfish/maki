@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use maki_agent::agent::LoadedInstructions;
 use maki_agent::cancel::CancelToken;
+use maki_agent::tools::hashline::EditSection;
 use maki_agent::tools::{
     Deadline, FileReadTracker, HashlineState, LocalTools, ToolAudience, ToolContext, ToolLive,
 };
@@ -342,21 +343,39 @@ impl UserData for LuaCtx {
         );
 
         methods.add_async_method(
-            "apply_hashline_edit",
-            |lua, this, (path, tag, patch): (String, String, String)| async move {
+            "apply_hashline_edits",
+            |lua, this, sections: LuaValue| async move {
                 let Some(agent) = this.agent() else {
-                    return Ok(this.cap_err_pair("apply_hashline_edit"));
+                    return Ok(this.cap_err_pair("apply_hashline_edits"));
                 };
-                match agent.hashline.edit(Path::new(&path), &tag, &patch).await {
-                    Ok(edit) => {
-                        agent.file_tracker.record_read(Path::new(&path));
-                        let result = lua.create_table()?;
-                        result.set("path", path)?;
-                        result.set("tag", edit.snapshot.tag)?;
-                        result.set("before", edit.before.as_ref())?;
-                        result.set("after", edit.after.as_ref())?;
-                        result.set("warning", edit.warning)?;
-                        Ok((Some(result), None))
+                let sections: Vec<Vec<String>> = lua.from_value(sections)?;
+                if sections.iter().any(|section| section.len() != 3) {
+                    return Err(mlua::Error::runtime(
+                        "apply_hashline_edits: each section requires path, tag, and patch",
+                    ));
+                }
+                let sections = sections
+                    .iter()
+                    .map(|section| EditSection {
+                        path: Path::new(&section[0]),
+                        tag: &section[1],
+                        patch: &section[2],
+                    })
+                    .collect::<Vec<_>>();
+                match agent.hashline.edit_sections(&sections).await {
+                    Ok(edits) => {
+                        let results = lua.create_table()?;
+                        for (index, edit) in edits.into_iter().enumerate() {
+                            agent.file_tracker.record_read(&edit.path);
+                            let result = lua.create_table()?;
+                            result.set("path", edit.path.to_string_lossy().as_ref())?;
+                            result.set("tag", edit.snapshot.tag)?;
+                            result.set("before", edit.before.as_ref())?;
+                            result.set("after", edit.after.as_ref())?;
+                            result.set("warning", edit.warning)?;
+                            results.set(index + 1, result)?;
+                        }
+                        Ok((Some(results), None))
                     }
                     Err(error) => Ok((None, Some(error))),
                 }

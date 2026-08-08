@@ -58,10 +58,26 @@ pub struct WrittenSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditResult {
+    pub path: PathBuf,
     pub before: Arc<str>,
     pub after: Arc<str>,
     pub snapshot: Snapshot,
     pub warning: Option<&'static str>,
+}
+
+pub struct EditSection<'a> {
+    pub path: &'a Path,
+    pub tag: &'a str,
+    pub patch: &'a str,
+}
+
+struct PreflightEdit {
+    path: PathBuf,
+    before_bytes: Vec<u8>,
+    before: String,
+    after: String,
+    format: TextFormat,
+    warning: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -196,28 +212,124 @@ impl HashlineState {
     }
 
     pub async fn edit(&self, path: &Path, tag: &str, patch: &str) -> Result<EditResult, String> {
-        let edits = parse_patch(patch).map_err(|error| error.to_string())?;
-        let snapshot = self.get(path, tag);
-        let _guard = self.lock_path(path).await;
-        let bytes = fs::read(path).map_err(|error| format!("read error: {error}"))?;
-        let current = String::from_utf8(bytes).map_err(|_| {
+        self.edit_sections(&[EditSection { path, tag, patch }])
+            .await
+            .map(|mut results| results.remove(0))
+    }
+
+    pub async fn edit_sections(
+        &self,
+        sections: &[EditSection<'_>],
+    ) -> Result<Vec<EditResult>, String> {
+        if sections.is_empty() {
+            return Err("edit requires at least one section".into());
+        }
+        let mut ordered_paths = sections
+            .iter()
+            .map(|section| canonical_path(section.path))
+            .collect::<Vec<_>>();
+        ordered_paths.sort();
+        if let Some(duplicate) = ordered_paths
+            .windows(2)
+            .find_map(|paths| (paths[0] == paths[1]).then(|| paths[0].as_path()))
+        {
+            return Err(format!(
+                "duplicate canonical path {}; merge its operations into one section",
+                duplicate.display()
+            ));
+        }
+
+        let mut guards = Vec::with_capacity(ordered_paths.len());
+        for path in &ordered_paths {
+            guards.push(self.lock_path(path).await);
+        }
+
+        let mut preflight = Vec::with_capacity(sections.len());
+        for section in sections {
+            preflight.push(self.preflight(section)?);
+        }
+
+        let writer = Arc::clone(&self.writer);
+        let mut committed: Vec<usize> = Vec::with_capacity(preflight.len());
+        for (index, edit) in preflight.iter().enumerate() {
+            let path = edit.path.clone();
+            let bytes = edit.format.restore(&edit.after).into_bytes();
+            let commit_writer = Arc::clone(&writer);
+            if let Err(error) = smol::unblock(move || commit_writer(&path, &bytes)).await {
+                let mut rollback_errors = Vec::new();
+                for landed in committed.iter().rev().map(|&landed| &preflight[landed]) {
+                    let path = landed.path.clone();
+                    let bytes = landed.before_bytes.clone();
+                    let writer = Arc::clone(&writer);
+                    if let Err(rollback_error) = smol::unblock(move || writer(&path, &bytes)).await
+                    {
+                        rollback_errors
+                            .push(format!("{}: {rollback_error}", landed.path.display()));
+                    }
+                }
+                if rollback_errors.is_empty() {
+                    return Err(format!(
+                        "commit failed for {}: {error}; rolled back {} landed section(s)",
+                        edit.path.display(),
+                        committed.len()
+                    ));
+                }
+                return Err(format!(
+                    "commit failed for {}: {error}; rollback incomplete: {}",
+                    edit.path.display(),
+                    rollback_errors.join(", ")
+                ));
+            }
+            committed.push(index);
+        }
+
+        let results = preflight
+            .into_iter()
+            .map(|edit| {
+                self.clear_no_op_attempt(&edit.path);
+                let snapshot = self.record_normalized(&edit.path, edit.after.clone(), edit.format);
+                EditResult {
+                    path: edit.path,
+                    before: Arc::from(edit.before),
+                    after: Arc::from(edit.after),
+                    snapshot,
+                    warning: edit.warning,
+                }
+            })
+            .collect();
+        drop(guards);
+        Ok(results)
+    }
+
+    fn preflight(&self, section: &EditSection<'_>) -> Result<PreflightEdit, String> {
+        let edits = parse_patch(section.patch).map_err(|error| error.to_string())?;
+        let snapshot = self.get(section.path, section.tag);
+        let before_bytes =
+            fs::read(section.path).map_err(|error| format!("read error: {error}"))?;
+        let current = String::from_utf8(before_bytes.clone()).map_err(|_| {
             format!(
                 "non-utf8 content: {}; re-read cannot proceed",
-                path.display()
+                section.path.display()
             )
         })?;
         let (before, format) = normalize(&current);
         let current_tag = content_tag(&before);
         let is_stale = snapshot.as_ref().is_none_or(|snapshot| {
-            current_tag != tag || before.as_str() != snapshot.content.as_ref()
+            current_tag != section.tag || before.as_str() != snapshot.content.as_ref()
         });
         let (edits, warning) = if is_stale {
             let remapped = snapshot
                 .as_ref()
                 .and_then(|snapshot| remap_edits(&snapshot.content, &before, &edits));
             let Some((edits, warning)) = remapped else {
-                self.record_normalized(path, before.clone(), format);
-                return Err(stale_error(path, tag, &current_tag, &before, &edits));
+                self.record_normalized(section.path, before.clone(), format);
+                return Err(stale_error(
+                    section.path,
+                    section.tag,
+                    &current_tag,
+                    &before,
+                    &edits,
+                ));
             };
             (edits, Some(warning))
         } else {
@@ -225,19 +337,14 @@ impl HashlineState {
         };
         let after = apply_patch(&before, &edits).map_err(|error| error.to_string())?;
         if after == before {
-            return Err(self.no_op_error(path, tag, patch));
+            return Err(self.no_op_error(section.path, section.tag, section.patch));
         }
-        self.clear_no_op_attempt(path);
-
-        let restored = format.restore(&after).into_bytes();
-        let writer = Arc::clone(&self.writer);
-        let write_path = path.to_path_buf();
-        smol::unblock(move || writer(&write_path, &restored)).await?;
-        let written = self.record_normalized(path, after.clone(), format);
-        Ok(EditResult {
-            before: Arc::from(before),
-            after: Arc::from(after),
-            snapshot: written,
+        Ok(PreflightEdit {
+            path: section.path.to_path_buf(),
+            before_bytes,
+            before,
+            after,
+            format,
             warning,
         })
     }
@@ -568,7 +675,7 @@ pub fn canonical_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
@@ -722,7 +829,7 @@ mod tests {
                 .edit(&path, &snapshot.tag, "PUT 1.=1:\n+after")
                 .await
                 .unwrap_err();
-            assert_eq!(error, "injected failure");
+            assert!(error.contains("injected failure"), "got: {error}");
             assert_eq!(fs::read_to_string(&path).unwrap(), "before\n");
             assert!(state.get(&path, &content_tag("after\n")).is_none());
         });
@@ -967,6 +1074,119 @@ mod tests {
 
             assert!(error.contains("stale tag"), "got: {error}");
             assert_eq!(fs::read_to_string(path).unwrap(), current);
+        });
+    }
+
+    #[test]
+    fn three_file_failure_rolls_back_landed_files_byte_identically() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let paths = [
+                dir.path().join("a"),
+                dir.path().join("b"),
+                dir.path().join("c"),
+            ];
+            let originals = [
+                b"\xef\xbb\xbfone\r\n".as_slice(),
+                b"two\n".as_slice(),
+                b"three\n".as_slice(),
+            ];
+            for (path, content) in paths.iter().zip(originals) {
+                fs::write(path, content).unwrap();
+            }
+            let writes = Arc::new(AtomicUsize::new(0));
+            let write_count = Arc::clone(&writes);
+            let state = HashlineState::with_writer(Arc::new(move |path, bytes| {
+                let attempt = write_count.fetch_add(1, Ordering::SeqCst);
+                if attempt == 2 {
+                    return Err("injected third commit failure".into());
+                }
+                fs::write(path, bytes).map_err(|error| error.to_string())
+            }));
+            let tags = paths
+                .iter()
+                .zip(originals)
+                .map(|(path, bytes)| state.record(path, str::from_utf8(bytes).unwrap()).tag)
+                .collect::<Vec<_>>();
+            let sections = paths
+                .iter()
+                .zip(&tags)
+                .map(|(path, tag)| EditSection {
+                    path,
+                    tag,
+                    patch: "PUT 1.=1:\n+changed",
+                })
+                .collect::<Vec<_>>();
+
+            let error = state.edit_sections(&sections).await.unwrap_err();
+
+            assert!(
+                error.contains("rolled back 2 landed section(s)"),
+                "got: {error}"
+            );
+            for ((path, expected), tag) in paths.iter().zip(originals).zip(tags) {
+                assert_eq!(fs::read(path).unwrap(), expected);
+                assert!(state.get(path, &tag).is_some());
+                assert!(state.get(path, &content_tag("changed\n")).is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn batch_preflight_failure_writes_nothing_and_duplicate_canonical_path_rejects() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let first = dir.path().join("first");
+            let second = dir.path().join("second");
+            fs::write(&first, "one\n").unwrap();
+            fs::write(&second, "two\n").unwrap();
+            let writes = Arc::new(AtomicUsize::new(0));
+            let write_count = Arc::clone(&writes);
+            let state = HashlineState::with_writer(Arc::new(move |path, bytes| {
+                write_count.fetch_add(1, Ordering::SeqCst);
+                fs::write(path, bytes).map_err(|error| error.to_string())
+            }));
+            let first_tag = state.record(&first, "one\n").tag;
+            let second_tag = state.record(&second, "two\n").tag;
+            fs::write(&second, "changed\n").unwrap();
+            let stale = [
+                EditSection {
+                    path: &first,
+                    tag: &first_tag,
+                    patch: "PUT 1.=1:\n+first",
+                },
+                EditSection {
+                    path: &second,
+                    tag: &second_tag,
+                    patch: "PUT 1.=1:\n+second",
+                },
+            ];
+
+            let error = state.edit_sections(&stale).await.unwrap_err();
+            assert!(error.contains("stale tag"), "got: {error}");
+            assert_eq!(writes.load(Ordering::SeqCst), 0);
+            assert_eq!(fs::read_to_string(&first).unwrap(), "one\n");
+
+            let alias = dir.path().join("alias");
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&first, &alias).unwrap();
+            #[cfg(not(unix))]
+            let alias = first.clone();
+            let duplicate = [
+                EditSection {
+                    path: &first,
+                    tag: &first_tag,
+                    patch: "PUT 1.=1:\n+first",
+                },
+                EditSection {
+                    path: &alias,
+                    tag: &first_tag,
+                    patch: "PUT 1.=1:\n+alias",
+                },
+            ];
+            let error = state.edit_sections(&duplicate).await.unwrap_err();
+            assert!(error.contains("duplicate canonical path"), "got: {error}");
+            assert!(error.contains("merge"), "got: {error}");
         });
     }
 

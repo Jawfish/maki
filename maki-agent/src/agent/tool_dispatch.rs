@@ -115,7 +115,7 @@ pub async fn run(
             }
         };
 
-        if let Some(target) = invocation.mutable_path() {
+        for target in invocation.mutable_paths() {
             let is_plan_target = ctx.mode.plan_path().is_some_and(|pp| target == pp);
             if !is_plan_target {
                 if ctx.mode.plan_path().is_some() {

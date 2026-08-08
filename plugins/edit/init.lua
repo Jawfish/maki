@@ -21,9 +21,9 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 - Use replace_all for renaming across a file.
 ]]
 
-local HASHLINE_DESCRIPTION = [[Edit one revision-tagged file atomically with strict line operations.
+local HASHLINE_DESCRIPTION = [[Edit one or more revision-tagged files atomically with strict line operations.
 
-Use `path` and the 16-character `tag` from `read` or the previous `edit` result. All operations in one patch use the tagged file's original line numbers, so later operations do not shift earlier anchors.
+Pass `sections`, each with `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. All sections apply or none do. Operations in each patch use that tagged file's original line numbers, so later operations do not shift earlier anchors.
 
 Grammar:
 - Replace inclusive range: `PUT N.=M:` then one or more `+TEXT` rows.
@@ -61,7 +61,11 @@ Prefer this over edit when making multiple changes to the same file.
 
 local function edit_header(input)
   local buf = maki.ui.buf()
-  buf:line({ { shorten_path(input.path or ""), "path" } })
+  local paths = {}
+  for _, section in ipairs(input.sections or {}) do
+    paths[#paths + 1] = shorten_path(section.path or "")
+  end
+  buf:line({ { table.concat(paths, ", "), "path" } })
   return buf
 end
 
@@ -275,45 +279,63 @@ end
 register_tool_if(opts.hashline_edit, {
   name = "edit",
   kind = "edit",
-  mutable_path = "path",
-  permission_scopes = "path",
+  mutable_paths = "sections.path",
+  permission_scopes = function(input)
+    local scopes = {}
+    for _, section in ipairs(input.sections or {}) do
+      scopes[#scopes + 1] = section.path
+    end
+    return { scopes = scopes }
+  end,
   audiences = { "main", "general_sub", "interpreter" },
   description = HASHLINE_DESCRIPTION,
 
   schema = {
     type = "object",
     properties = {
-      path = {
-        type = "string",
-        description = "Absolute path to the file",
+      sections = {
+        type = "array",
+        description = "File edits applied all-or-none",
         required = true,
-        alias = "file_path",
-      },
-      tag = {
-        type = "string",
-        description = "Revision tag from read or the previous edit result",
-        required = true,
-      },
-      patch = {
-        type = "string",
-        description = "Hashline PUT/CUT operations against the tagged revision",
-        required = true,
+        items = {
+          type = "object",
+          required = { "path", "tag", "patch" },
+          properties = {
+            path = { type = "string", description = "Absolute path to the file" },
+            tag = { type = "string", description = "Revision tag from read or the previous edit result" },
+            patch = { type = "string", description = "Hashline PUT/CUT operations against the tagged revision" },
+          },
+        },
       },
     },
   },
 
   header = edit_header,
   handler = function(input, ctx)
-    local path = maki.fs.abspath(input.path)
-    local result, err = ctx:apply_hashline_edit(path, input.tag, input.patch)
-    if not result then
+    local sections = {}
+    for _, section in ipairs(input.sections) do
+      sections[#sections + 1] = { maki.fs.abspath(section.path), section.tag, section.patch }
+    end
+    local results, err = ctx:apply_hashline_edits(sections)
+    if not results then
       return { llm_output = err, is_error = true }
     end
-    local summary = "edited " .. shorten_path(path) .. "\ntag: " .. result.tag
-    if result.warning then
-      summary = summary .. "\n" .. result.warning
+    local summaries = {}
+    for _, result in ipairs(results) do
+      local summary = "edited " .. shorten_path(result.path) .. "\ntag: " .. result.tag
+      if result.warning then
+        summary = summary .. "\n" .. result.warning
+      end
+      summaries[#summaries + 1] = summary
     end
-    return diff_result(result, summary)
+    local response = { llm_output = table.concat(summaries, "\n") }
+    response.diff_path = results[1].path
+    response.diff_before = results[1].before
+    response.diff_after = results[1].after
+    if #results == 1 then
+      response.written_path = results[1].path
+    end
+    return response
   end,
 })
 

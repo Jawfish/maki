@@ -2987,7 +2987,46 @@ fn mutable_path_returns_path_from_input() {
         .tool
         .parse(&serde_json::json!({ "path": "/tmp/foo.txt" }))
         .expect("parse failed");
-    assert_eq!(inv.mutable_path(), Some(Path::new("/tmp/foo.txt")));
+    assert_eq!(inv.mutable_paths(), vec![Path::new("/tmp/foo.txt")]);
+}
+
+#[test]
+fn mutable_paths_returns_every_nested_path() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"maki.api.register_tool({
+        name = "mp_many",
+        description = "test",
+        schema = {
+            type = "object",
+            properties = {
+                sections = {
+                    type = "array",
+                    items = {
+                        type = "object",
+                        properties = { path = { type = "string" } },
+                        required = { "path" },
+                    },
+                },
+            },
+            required = { "sections" },
+        },
+        mutable_paths = "sections.path",
+        handler = function() return "" end,
+    })"#;
+    host.load_source("mp_many_plugin", src).unwrap();
+    let entry = reg.get("mp_many").expect("tool not registered");
+    let invocation = entry
+        .tool
+        .parse(&serde_json::json!({
+            "sections": [{ "path": "/tmp/first" }, { "path": "/tmp/second" }]
+        }))
+        .unwrap();
+
+    assert_eq!(
+        invocation.mutable_paths(),
+        vec![Path::new("/tmp/first"), Path::new("/tmp/second")]
+    );
 }
 
 #[test]
@@ -3916,7 +3955,7 @@ mod read_tool_required_params {
         let first = exec_output_with_ctx(
             &reg,
             "edit",
-            serde_json::json!({ "path": path, "tag": tag, "patch": "PUT 2.=2:\n+second" }),
+            serde_json::json!({ "sections": [{ "path": path, "tag": tag, "patch": "PUT 2.=2:\n+second" }] }),
             &ctx,
         )
         .unwrap();
@@ -3938,7 +3977,7 @@ mod read_tool_required_params {
         let second = exec_output_with_ctx(
             &reg,
             "edit",
-            serde_json::json!({ "path": path, "tag": tag, "patch": "PUT >2:\n+three" }),
+            serde_json::json!({ "sections": [{ "path": path, "tag": tag, "patch": "PUT >2:\n+three" }] }),
             &ctx,
         )
         .unwrap();
@@ -3947,6 +3986,83 @@ mod read_tool_required_params {
             std::fs::read_to_string(path).unwrap(),
             "one\nsecond\nthree\n"
         );
+    }
+
+    #[test]
+    fn hashline_edit_exposes_every_path_for_policy_enforcement() {
+        let (reg, _host) = builtins_host();
+        let edit = reg.get("edit").unwrap();
+        let invocation = edit
+            .tool
+            .parse(&serde_json::json!({ "sections": [
+                { "path": "/tmp/first", "tag": "0000000000000000", "patch": "CUT 1.=1" },
+                { "path": "/tmp/second", "tag": "0000000000000000", "patch": "CUT 1.=1" }
+            ] }))
+            .unwrap();
+
+        assert_eq!(
+            invocation.mutable_paths(),
+            vec![Path::new("/tmp/first"), Path::new("/tmp/second")]
+        );
+        let scopes = smol::block_on(invocation.permission_scopes()).unwrap();
+        assert_eq!(scopes.scopes, vec!["/tmp/first", "/tmp/second"]);
+        assert!(!scopes.force_prompt);
+    }
+
+    #[test]
+    fn hashline_multi_file_edit_returns_tags_warnings_and_rejects_duplicates() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        std::fs::write(&first, "one\ntwo\n").unwrap();
+        std::fs::write(&second, "alpha\nbeta\n").unwrap();
+        let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        let first_snapshot = ctx.hashline.record(&first, "one\ntwo\n");
+        let second_snapshot = ctx.hashline.record(&second, "alpha\nbeta\n");
+        std::fs::write(&second, "above\nalpha\nbeta\n").unwrap();
+
+        let output = exec_output_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "sections": [
+                { "path": first, "tag": first_snapshot.tag, "patch": "PUT 2.=2:\n+changed" },
+                { "path": second, "tag": second_snapshot.tag, "patch": "PUT 2.=2:\n+changed" }
+            ] }),
+            &ctx,
+        )
+        .unwrap();
+        let ToolOutput::Diff {
+            summary,
+            before,
+            after,
+            ..
+        } = output
+        else {
+            panic!("multi-file edit should retain a useful diff");
+        };
+        assert_eq!(before, "one\ntwo\n");
+        assert_eq!(after, "one\nchanged\n");
+        assert_eq!(summary.matches("tag: ").count(), 2);
+        assert!(summary.contains("warning: stale line anchors remapped"));
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            "above\nalpha\nchanged\n"
+        );
+
+        let tag = ctx.hashline.record(&first, "one\nchanged\n").tag;
+        let error = exec_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "sections": [
+                { "path": first, "tag": tag, "patch": "PUT 1.=1:\n+first" },
+                { "path": first, "tag": tag, "patch": "PUT 2.=2:\n+second" }
+            ] }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(error.contains("duplicate canonical path"), "got: {error}");
+        assert!(error.contains("merge"), "got: {error}");
     }
 
     #[test]
@@ -3962,7 +4078,7 @@ mod read_tool_required_params {
         let output = exec_output_with_ctx(
             &reg,
             "edit",
-            serde_json::json!({ "path": path, "tag": snapshot.tag, "patch": "PUT 2.=2:\n+changed" }),
+            serde_json::json!({ "sections": [{ "path": path, "tag": snapshot.tag, "patch": "PUT 2.=2:\n+changed" }] }),
             &ctx,
         )
         .unwrap();
@@ -3997,7 +4113,7 @@ mod read_tool_required_params {
             let output = exec_output_with_ctx(
                 &reg,
                 "edit",
-                serde_json::json!({ "path": path, "tag": tag, "patch": patch }),
+                serde_json::json!({ "sections": [{ "path": path, "tag": tag, "patch": patch }] }),
                 &ctx,
             )
             .unwrap();

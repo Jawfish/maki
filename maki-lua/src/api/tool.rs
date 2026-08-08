@@ -366,10 +366,26 @@ impl ToolInvocation for LuaToolInvocation {
         }
     }
 
-    fn mutable_path(&self) -> Option<&Path> {
-        let field = self.mutable_path_field.as_deref()?;
-        let val = self.input.get(field)?.as_str()?;
-        Some(Path::new(val))
+    fn mutable_paths(&self) -> Vec<&Path> {
+        let Some(field) = self.mutable_path_field.as_deref() else {
+            return Vec::new();
+        };
+        let Some((array_field, item_field)) = field.split_once('.') else {
+            return self
+                .input
+                .get(field)
+                .and_then(Value::as_str)
+                .map(Path::new)
+                .into_iter()
+                .collect();
+        };
+        self.input
+            .get(array_field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get(item_field).and_then(Value::as_str).map(Path::new))
+            .collect()
     }
 
     fn execute<'a>(self: Box<Self>, ctx: &'a ToolContext) -> ExecFuture<'a> {
@@ -1061,7 +1077,21 @@ fn require_schema_field(spec: &Table, key: &str, schema: &Value) -> LuaResult<Op
     let Some(field) = spec_opt::<String>(spec, key, "a string")? else {
         return Ok(None);
     };
-    check_schema_field(schema, key, &field, "string")?;
+    if let Some((array_field, item_field)) = field.split_once('.') {
+        check_schema_field(schema, key, array_field, "array")?;
+        let item_schema = schema
+            .get("properties")
+            .and_then(|properties| properties.get(array_field))
+            .and_then(|array| array.get("items"))
+            .ok_or_else(|| {
+                mlua::Error::runtime(format!(
+                    "register_tool: {key} field '{array_field}' has no item schema"
+                ))
+            })?;
+        check_schema_field(item_schema, key, item_field, "string")?;
+    } else {
+        check_schema_field(schema, key, &field, "string")?;
+    }
     Ok(Some(Arc::from(field.as_str())))
 }
 
@@ -1122,7 +1152,10 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             "register_tool: 'permission_scope' was removed; use permission_scopes = \"<field>\" or permission_scopes = function(input) ... end",
         ));
     }
-    let mutable_path_field = require_schema_field(spec, "mutable_path", &schema_val)?;
+    let mutable_path_field = match require_schema_field(spec, "mutable_paths", &schema_val)? {
+        Some(field) => Some(field),
+        None => require_schema_field(spec, "mutable_path", &schema_val)?,
+    };
 
     let permission_scopes = match spec.get::<LuaValue>("permission_scopes")? {
         LuaValue::Nil => None,

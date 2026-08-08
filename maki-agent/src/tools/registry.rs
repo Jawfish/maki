@@ -188,8 +188,8 @@ impl PermissionScopes {
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Holds the parsed input so start-event and `execute` share one parse pass.
-/// `permission_scopes` and `mutable_path` belong here because only the parsed
-/// call knows which file it will touch.
+/// `permission_scopes` and `mutable_paths` belong here because only the parsed
+/// call knows which files it will touch.
 pub trait ToolInvocation: Send + Sync {
     fn start_header(&self) -> HeaderFuture;
     fn start_annotation(&self) -> Option<String> {
@@ -198,8 +198,8 @@ pub trait ToolInvocation: Send + Sync {
     fn start_output(&self, _ctx: &ToolContext) -> Option<ToolOutput> {
         None
     }
-    fn mutable_path(&self) -> Option<&Path> {
-        None
+    fn mutable_paths(&self) -> Vec<&Path> {
+        Vec::new()
     }
     fn permission_scopes(&self) -> BoxFuture<'_, Option<PermissionScopes>> {
         Box::pin(std::future::ready(None))
