@@ -355,6 +355,7 @@ impl UserData for LuaCtx {
                         result.set("tag", edit.snapshot.tag)?;
                         result.set("before", edit.before.as_ref())?;
                         result.set("after", edit.after.as_ref())?;
+                        result.set("warning", edit.warning)?;
                         Ok((Some(result), None))
                     }
                     Err(error) => Ok((None, Some(error))),

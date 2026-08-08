@@ -3950,6 +3950,36 @@ mod read_tool_required_params {
     }
 
     #[test]
+    fn hashline_stale_remap_surfaces_warning_and_fresh_tag() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remapped.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        let snapshot = ctx.hashline.record(&path, "one\ntwo\nthree\n");
+        std::fs::write(&path, "above\none\ntwo\nthree\n").unwrap();
+
+        let output = exec_output_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "path": path, "tag": snapshot.tag, "patch": "PUT 2.=2:\n+changed" }),
+            &ctx,
+        )
+        .unwrap();
+
+        let maki_agent::ToolOutput::Diff { summary, after, .. } = output else {
+            panic!("edit should return a diff");
+        };
+        assert_eq!(after, "above\none\nchanged\nthree\n");
+        assert!(summary.contains("warning: stale line anchors remapped"));
+        let fresh_tag = summary
+            .lines()
+            .find_map(|line| line.strip_prefix("tag: "))
+            .unwrap();
+        assert_eq!(fresh_tag, maki_agent::tools::hashline::content_tag(&after));
+    }
+
+    #[test]
     fn hashline_dogfoods_twenty_chained_pipeline_edits() {
         let (reg, _host) = builtins_host();
         let dir = tempfile::tempdir().unwrap();

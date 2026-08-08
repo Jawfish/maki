@@ -309,7 +309,11 @@ register_tool_if(opts.hashline_edit, {
     if not result then
       return { llm_output = err, is_error = true }
     end
-    return diff_result(result, "edited " .. shorten_path(path) .. "\ntag: " .. result.tag)
+    local summary = "edited " .. shorten_path(path) .. "\ntag: " .. result.tag
+    if result.warning then
+      summary = summary .. "\n" .. result.warning
+    end
+    return diff_result(result, summary)
   end,
 })
 

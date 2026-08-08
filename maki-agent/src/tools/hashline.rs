@@ -5,14 +5,18 @@ use std::sync::{Arc, Mutex};
 
 use async_lock::{Mutex as AsyncMutex, MutexGuardArc};
 use sha2::{Digest, Sha256};
+use similar::{DiffTag, TextDiff};
 
-use super::hashline_patch::{apply_patch, parse_patch};
+use super::hashline_patch::{Edit, apply_patch, parse_patch};
 
 const BOM: &str = "\u{feff}";
 const DEFAULT_MAX_VERSIONS_PER_PATH: usize = 8;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const STALE_WINDOW_RADIUS: usize = 3;
 const NO_OP_LOOP_LIMIT: usize = 3;
+const REMAP_WARNING: &str = "warning: stale line anchors remapped to unchanged current lines; verify the diff matches your intent";
+const STABLE_DRIFT_WARNING: &str =
+    "warning: stale file drift detected; head/tail-only inserts remain position-stable";
 
 pub type ContentTag = String;
 
@@ -57,6 +61,7 @@ pub struct EditResult {
     pub before: Arc<str>,
     pub after: Arc<str>,
     pub snapshot: Snapshot,
+    pub warning: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -206,10 +211,18 @@ impl HashlineState {
         let is_stale = snapshot.as_ref().is_none_or(|snapshot| {
             current_tag != tag || before.as_str() != snapshot.content.as_ref()
         });
-        if is_stale {
-            self.record_normalized(path, before.clone(), format);
-            return Err(stale_error(path, tag, &current_tag, &before, &edits));
-        }
+        let (edits, warning) = if is_stale {
+            let remapped = snapshot
+                .as_ref()
+                .and_then(|snapshot| remap_edits(&snapshot.content, &before, &edits));
+            let Some((edits, warning)) = remapped else {
+                self.record_normalized(path, before.clone(), format);
+                return Err(stale_error(path, tag, &current_tag, &before, &edits));
+            };
+            (edits, Some(warning))
+        } else {
+            (edits, None)
+        };
         let after = apply_patch(&before, &edits).map_err(|error| error.to_string())?;
         if after == before {
             return Err(self.no_op_error(path, tag, patch));
@@ -225,6 +238,7 @@ impl HashlineState {
             before: Arc::from(before),
             after: Arc::from(after),
             snapshot: written,
+            warning,
         })
     }
 
@@ -321,6 +335,172 @@ impl HashlineState {
             }
         }
     }
+}
+
+fn remap_edits(previous: &str, current: &str, edits: &[Edit]) -> Option<(Vec<Edit>, &'static str)> {
+    if edits
+        .iter()
+        .all(|edit| matches!(edit, Edit::InsertHead { .. } | Edit::InsertTail { .. }))
+    {
+        return Some((edits.to_vec(), STABLE_DRIFT_WARNING));
+    }
+
+    let line_map = unchanged_line_map(previous, current);
+    let targeted = targeted_lines(edits);
+    if !validate_anchor_context(previous, current, &line_map, &targeted) {
+        return None;
+    }
+
+    let mut offsets = Vec::new();
+    let mut map_line = |line: usize| {
+        let mapped = line_map.get(&line).copied()?;
+        offsets.push(mapped as isize - line as isize);
+        Some(mapped)
+    };
+    let mut remapped = Vec::with_capacity(edits.len());
+    for edit in edits {
+        remapped.push(match edit {
+            Edit::Replace {
+                start,
+                end,
+                lines,
+                patch_line,
+            } => Edit::Replace {
+                start: map_line(*start)?,
+                end: map_line(*end)?,
+                lines: lines.clone(),
+                patch_line: *patch_line,
+            },
+            Edit::Cut {
+                start,
+                end,
+                patch_line,
+            } => Edit::Cut {
+                start: map_line(*start)?,
+                end: map_line(*end)?,
+                patch_line: *patch_line,
+            },
+            Edit::InsertBefore {
+                line,
+                lines,
+                patch_line,
+            } => Edit::InsertBefore {
+                line: map_line(*line)?,
+                lines: lines.clone(),
+                patch_line: *patch_line,
+            },
+            Edit::InsertAfter {
+                line,
+                lines,
+                patch_line,
+            } => Edit::InsertAfter {
+                line: map_line(*line)?,
+                lines: lines.clone(),
+                patch_line: *patch_line,
+            },
+            Edit::InsertHead { .. } | Edit::InsertTail { .. } => edit.clone(),
+        });
+    }
+    let offset = *offsets.first()?;
+    offsets
+        .iter()
+        .all(|candidate| *candidate == offset)
+        .then_some((remapped, REMAP_WARNING))
+}
+
+fn content_lines(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        content
+            .strip_suffix('\n')
+            .unwrap_or(content)
+            .split('\n')
+            .collect()
+    }
+}
+
+fn unchanged_line_map(previous: &str, current: &str) -> HashMap<usize, usize> {
+    let diff = TextDiff::from_lines(previous, current);
+    let mut map = HashMap::new();
+    for operation in diff.ops() {
+        if operation.tag() != DiffTag::Equal {
+            continue;
+        }
+        for offset in 0..operation.old_range().len() {
+            map.insert(
+                operation.old_range().start + offset + 1,
+                operation.new_range().start + offset + 1,
+            );
+        }
+    }
+    map
+}
+
+fn targeted_lines(edits: &[Edit]) -> Vec<usize> {
+    let mut lines = Vec::new();
+    for edit in edits {
+        match edit {
+            Edit::Replace { start, end, .. } | Edit::Cut { start, end, .. } => {
+                lines.extend(*start..=*end);
+            }
+            Edit::InsertBefore { line, .. } | Edit::InsertAfter { line, .. } => lines.push(*line),
+            Edit::InsertHead { .. } | Edit::InsertTail { .. } => {}
+        }
+    }
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+fn validate_anchor_context(
+    previous: &str,
+    current: &str,
+    line_map: &HashMap<usize, usize>,
+    targeted: &[usize],
+) -> bool {
+    let previous_lines = content_lines(previous);
+    let current_lines = content_lines(current);
+    let previous_duplicates = duplicated_lines(&previous_lines);
+    let current_duplicates = duplicated_lines(&current_lines);
+
+    targeted.iter().all(|line| {
+        let Some(mapped) = line_map.get(line).copied() else {
+            return false;
+        };
+        let start = targeted.partition_point(|candidate| *candidate < *line);
+        let mut run_start = start;
+        while run_start > 0 && targeted[run_start - 1] + 1 == targeted[run_start] {
+            run_start -= 1;
+        }
+        let mut run_end = start;
+        while run_end + 1 < targeted.len() && targeted[run_end] + 1 == targeted[run_end + 1] {
+            run_end += 1;
+        }
+        let before = targeted[run_start].checked_sub(1).filter(|line| *line > 0);
+        let after = (targeted[run_end] < previous_lines.len()).then_some(targeted[run_end] + 1);
+        let context_matches = |context: usize| {
+            line_map.get(&context).copied()
+                == Some((mapped as isize + context as isize - *line as isize) as usize)
+        };
+        let duplicated = previous_duplicates.contains(previous_lines[*line - 1])
+            || current_duplicates.contains(current_lines[mapped - 1]);
+        if duplicated {
+            let contexts: Vec<_> = [before, after].into_iter().flatten().collect();
+            !contexts.is_empty() && contexts.into_iter().all(context_matches)
+        } else {
+            [before, after].into_iter().flatten().any(context_matches)
+        }
+    })
+}
+
+fn duplicated_lines<'a>(lines: &[&'a str]) -> std::collections::HashSet<&'a str> {
+    let mut seen = std::collections::HashSet::new();
+    lines
+        .iter()
+        .copied()
+        .filter(|line| !seen.insert(*line))
+        .collect()
 }
 
 fn stale_error(
@@ -634,6 +814,159 @@ mod tests {
             assert!(error.contains("12: new 12"), "got: {error}");
             assert!(!error.contains("5: new 5"), "got: {error}");
             assert!(state.get(&path, &content_tag(&current)).is_some());
+        });
+    }
+
+    #[test]
+    fn stale_insert_above_target_remaps_with_warning_and_fresh_tag() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let original = "alpha\nbeta\ngamma\n";
+            let current = "new\nalpha\nbeta\ngamma\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, original);
+            fs::write(&path, current).unwrap();
+
+            let result = state
+                .edit(&path, &snapshot.tag, "PUT 2.=2:\n+changed")
+                .await
+                .unwrap();
+
+            assert_eq!(&*result.after, "new\nalpha\nchanged\ngamma\n");
+            assert_eq!(result.warning, Some(REMAP_WARNING));
+            assert_eq!(result.snapshot.tag, content_tag(&result.after));
+            assert_eq!(fs::read_to_string(path).unwrap(), &*result.after);
+        });
+    }
+
+    #[test]
+    fn stale_target_and_range_interior_changes_fail_closed() {
+        smol::block_on(async {
+            for (patch, current) in [
+                ("PUT 2.=2:\n+new", "one\nchanged\nthree\nfour\n"),
+                ("CUT 2.=4", "one\ntwo\nchanged\nfour\n"),
+            ] {
+                let dir = tempfile::TempDir::new().unwrap();
+                let path = dir.path().join("file");
+                let original = "one\ntwo\nthree\nfour\n";
+                fs::write(&path, original).unwrap();
+                let state = HashlineState::new();
+                let snapshot = state.record(&path, original);
+                fs::write(&path, current).unwrap();
+
+                let error = state.edit(&path, &snapshot.tag, patch).await.unwrap_err();
+
+                assert!(error.contains("stale tag"), "got: {error}");
+                assert!(error.contains("Fresh tag:"), "got: {error}");
+                assert_eq!(fs::read_to_string(path).unwrap(), current);
+            }
+        });
+    }
+
+    #[test]
+    fn stale_duplicate_ambiguity_and_non_uniform_offsets_fail_closed() {
+        smol::block_on(async {
+            let cases = [
+                (
+                    "start\nduplicate\nend\n",
+                    "start\nduplicate\nmiddle\nduplicate\nend\n",
+                    "PUT 2.=2:\n+changed",
+                ),
+                (
+                    "a\nb\nc\nd\ne\nf\n",
+                    "above\na\nb\nc\nd\nbetween\ne\nf\n",
+                    "PUT 2.=2:\n+B\nPUT 5.=5:\n+E",
+                ),
+            ];
+            for (original, current, patch) in cases {
+                let dir = tempfile::TempDir::new().unwrap();
+                let path = dir.path().join("file");
+                fs::write(&path, original).unwrap();
+                let state = HashlineState::new();
+                let snapshot = state.record(&path, original);
+                fs::write(&path, current).unwrap();
+
+                let error = state.edit(&path, &snapshot.tag, patch).await.unwrap_err();
+
+                assert!(error.contains("stale tag"), "got: {error}");
+                assert_eq!(fs::read_to_string(path).unwrap(), current);
+            }
+        });
+    }
+
+    #[test]
+    fn stale_duplicate_anchor_with_unchanged_neighbors_remaps() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let original = "left\nduplicate\nright\nother\nduplicate\ntail\n";
+            let current = "above\nleft\nduplicate\nright\nother\nduplicate\ntail\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, original);
+            fs::write(&path, current).unwrap();
+
+            let result = state
+                .edit(&path, &snapshot.tag, "PUT 2.=2:\n+changed")
+                .await
+                .unwrap();
+
+            assert_eq!(
+                &*result.after,
+                "above\nleft\nchanged\nright\nother\nduplicate\ntail\n"
+            );
+            assert_eq!(result.warning, Some(REMAP_WARNING));
+        });
+    }
+
+    #[test]
+    fn stale_head_tail_only_patch_is_position_stable_on_drift() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let original = "one\ntwo\n";
+            let current = "changed\ntwo\nexternal\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, original);
+            fs::write(&path, current).unwrap();
+
+            let result = state
+                .edit(&path, &snapshot.tag, "PUT <1:\n+head\nPUT >$:\n+tail")
+                .await
+                .unwrap();
+
+            assert_eq!(&*result.after, "head\nchanged\ntwo\nexternal\ntail\n");
+            assert_eq!(result.warning, Some(STABLE_DRIFT_WARNING));
+            assert_eq!(result.snapshot.tag, content_tag(&result.after));
+        });
+    }
+
+    #[test]
+    fn mixed_head_insert_still_requires_numbered_anchor_remap() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let original = "one\ntwo\nthree\n";
+            let current = "one\nchanged\nthree\n";
+            fs::write(&path, original).unwrap();
+            let state = HashlineState::new();
+            let snapshot = state.record(&path, original);
+            fs::write(&path, current).unwrap();
+
+            let error = state
+                .edit(
+                    &path,
+                    &snapshot.tag,
+                    "PUT <1:\n+head\nPUT 2.=2:\n+replacement",
+                )
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("stale tag"), "got: {error}");
+            assert_eq!(fs::read_to_string(path).unwrap(), current);
         });
     }
 
