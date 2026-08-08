@@ -3919,6 +3919,14 @@ mod read_tool_required_params {
         let second = exec_tool(&reg, "read", input.clone()).unwrap();
         assert_eq!(first.lines().next(), second.lines().next());
         assert!(
+            first
+                .lines()
+                .next()
+                .unwrap()
+                .contains(std::fs::canonicalize(&path).unwrap().to_str().unwrap()),
+            "read header should use a canonical absolute path: {first}"
+        );
+        assert!(
             first.lines().next().unwrap().ends_with(']'),
             "missing hashline header: {first}"
         );
@@ -3960,6 +3968,7 @@ mod read_tool_required_params {
         )
         .unwrap();
         let maki_agent::ToolOutput::Diff {
+            path: result_path,
             before,
             after,
             summary,
@@ -3968,6 +3977,11 @@ mod read_tool_required_params {
         else {
             panic!("edit should return a diff");
         };
+        assert_eq!(result_path, std::fs::canonicalize(&path).unwrap());
+        assert_eq!(
+            summary.lines().next().unwrap(),
+            format!("edited {result_path}")
+        );
         assert_eq!(before, "one\ntwo\n");
         assert_eq!(after, "one\nsecond\n");
         let tag = summary
@@ -4044,7 +4058,7 @@ mod read_tool_required_params {
         assert_eq!(before, "one\ntwo\n");
         assert_eq!(after, "one\nchanged\n");
         assert_eq!(summary.matches("tag: ").count(), 2);
-        assert!(summary.contains("warning: stale line anchors remapped"));
+        assert!(summary.contains("warning: stale line anchors remapped: 2→3"));
         assert_eq!(
             std::fs::read_to_string(&second).unwrap(),
             "above\nalpha\nchanged\n"
@@ -4087,7 +4101,7 @@ mod read_tool_required_params {
             panic!("edit should return a diff");
         };
         assert_eq!(after, "above\none\nchanged\nthree\n");
-        assert!(summary.contains("warning: stale line anchors remapped"));
+        assert!(summary.contains("warning: stale line anchors remapped: 2→3"));
         let fresh_tag = summary
             .lines()
             .find_map(|line| line.strip_prefix("tag: "))
@@ -4163,12 +4177,24 @@ mod read_tool_required_params {
             "Wrong:",
             "Right:",
             "no-op",
+            "BOM is stripped",
+            "CRLF becomes LF",
         ] {
             assert!(
                 description.contains(required),
                 "missing {required:?}: {description}"
             );
         }
+        let read_tool = reg.get("read").unwrap();
+        let read = read_tool.tool.description(&context);
+        assert!(
+            read.contains("BOM is stripped"),
+            "missing normalization: {read}"
+        );
+        assert!(
+            read.contains("CRLF becomes LF"),
+            "missing normalization: {read}"
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 
 local HASHLINE_DESCRIPTION = [[Edit one or more revision-tagged files atomically with strict line operations.
 
-Pass `sections`, each with `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. All sections apply or none do. Operations in each patch use that tagged file's original line numbers, so later operations do not shift earlier anchors.
+Pass `sections`, each with `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. Tags and numbered content use normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF. Writes preserve the detected file format. All sections apply or none do. Operations in each patch use that tagged file's original line numbers, so later operations do not shift earlier anchors.
 
 Grammar:
 - Replace inclusive range: `PUT N.=M:` then one or more `+TEXT` rows.
@@ -302,7 +302,11 @@ register_tool_if(opts.hashline_edit, {
           required = { "path", "tag", "patch" },
           properties = {
             path = { type = "string", description = "Absolute path to the file" },
-            tag = { type = "string", description = "Revision tag from read or the previous edit result" },
+            tag = {
+              type = "string",
+              pattern = "^[0-9a-f]{16}$",
+              description = "Exactly 16 lowercase hex characters from read or the previous edit result",
+            },
             patch = { type = "string", description = "Hashline PUT/CUT operations against the tagged revision" },
           },
         },
@@ -322,7 +326,7 @@ register_tool_if(opts.hashline_edit, {
     end
     local summaries = {}
     for _, result in ipairs(results) do
-      local summary = "edited " .. shorten_path(result.path) .. "\ntag: " .. result.tag
+      local summary = "edited " .. result.path .. "\ntag: " .. result.tag
       if result.warning then
         summary = summary .. "\n" .. result.warning
       end

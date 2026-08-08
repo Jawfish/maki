@@ -15,7 +15,8 @@ local DESCRIPTION = [[Read a file or directory. Returns contents with line numbe
 - Do not reread the same range (same file and same offset).
 - Prefer grep to locate content instead of scanning full files.
 - Call in parallel when reading multiple files.
-- Avoid tiny repeated slices - read a larger window if you need more context.]]
+- Avoid tiny repeated slices - read a larger window if you need more context.
+- With hashline editing, the header tag hashes normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF.]]
 
 local DEFAULT_MAX_OUTPUT_LINES = 2000
 
