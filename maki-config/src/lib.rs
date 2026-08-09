@@ -63,6 +63,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "memory",
     "question",
     "read",
+    "review",
     "sessions",
     "skill",
     "task",
