@@ -169,9 +169,10 @@ impl AgentLoop {
 
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
         let slot = self.model_slot.load();
+        let keep_recent = agent::keep_recent_tokens(&self.config, &slot.model);
         let (provider, model) =
             agent::resolve_compaction_model(&slot.provider, &slot.model, self.timeouts);
-        agent::compact(&*provider, &model, &mut self.history, event_tx).await
+        agent::compact(&*provider, &model, &mut self.history, keep_recent, event_tx).await
     }
 
     /// Codex-style review: the reviewer gets its own conversation, its own

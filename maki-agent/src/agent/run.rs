@@ -492,6 +492,7 @@ impl<'h> Agent<'h> {
             &*compact_provider,
             &compact_model,
             self.history,
+            compaction::keep_recent_tokens(&self.config, &self.model),
             &self.event_tx,
             &self.cancel,
         )
@@ -533,6 +534,9 @@ impl<'h> Agent<'h> {
 }
 
 const CHARS_PER_TOKEN: usize = 4;
+/// A tiny image still costs well over a thousand tokens, so counting it as zero
+/// makes any budget built on this estimate wrong by a lot.
+const CHARS_PER_IMAGE: usize = 4_800;
 
 pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     if messages.is_empty() {
@@ -545,6 +549,7 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
             ContentBlock::Text { text } => Some(text.len()),
             ContentBlock::ToolResult { content, .. } => Some(content.len()),
             ContentBlock::ToolUse { input, .. } => Some(input.to_string().len()),
+            ContentBlock::Image { .. } => Some(CHARS_PER_IMAGE),
             _ => None,
         })
         .sum();
