@@ -4253,6 +4253,10 @@ mod read_tool_required_params {
             "no-op",
             "BOM is stripped",
             "CRLF becomes LF",
+            "deletes original lines",
+            "body is final content",
+            "For pure additions",
+            "never replace an adjacent line",
         ] {
             assert!(
                 description.contains(required),

@@ -22,18 +22,18 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 ]]
 
 local HASHLINE_DESCRIPTION =
-  [[Edit one or more revision-tagged files atomically with strict line and syntax-block operations.
+  [[Edit one or more revision-tagged files as one batch with strict line and syntax-block operations.
 
-Pass `sections`, each with `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. Tags and numbered content use normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF. Writes preserve the detected file format. All sections apply or none do. Operations in each patch use that tagged file's original line numbers, so later operations do not shift earlier anchors.
+Pass `sections`, each with an existing file's absolute `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. Use `write` for new files. Tags and numbered content use normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF. Writes preserve the detected file format. All sections are validated before writing; commit failures trigger a rollback attempt. Operations in each patch use that tagged file's original line numbers, so earlier operations do not shift later anchors.
 
 Grammar:
-- Replace inclusive range: `PUT N.=M:` then one or more `+TEXT` rows.
+- Replace inclusive range: `PUT N.=M:` deletes original lines N through M and replaces them with `+TEXT` rows. The body is final content; its length is irrelevant.
 - Insert before/after a line: `PUT <N:` or `PUT >N:` then `+TEXT` rows.
 - Insert at file head/tail: `PUT <1:` or `PUT >$:` then `+TEXT` rows.
 - Delete inclusive range: `CUT N.=M` with no body.
 - Replace/delete a syntax block: `PUT N*:` or `CUT N*`.
 - Insert after a syntax block: `PUT >N*:`. Unlike `>N`, this follows the complete selected block, not line `N`.
-- Put multiple non-overlapping operations in one patch.
+- Put multiple non-overlapping operations for the same file in one section.
 
 Block rules:
 - On supported file types, `N*` selects the complete declaration or Markdown section at line `N`, including attached decorators, attributes, and documentation.
@@ -41,20 +41,21 @@ Block rules:
 - Block targets never remap when stale. Re-read the file, then re-author the patch with its fresh tag and numbering.
 
 Rules:
-- Every body row starts with exactly `+`; the rest is literal file content. Blank inserted lines are `+`.
+- Every body row starts with `+`; everything after that first `+` is literal content. Use `+` alone for a blank line.
 - Copy indentation after `+`. Do not include read's `N: ` line-number prefix.
-- Use the smallest exact range. `PUT` must have a non-empty body; use `CUT` to delete.
+- Use the smallest exact range. A replacement range contains only lines meant to disappear. For pure additions, use `PUT <N:` or `PUT >N:`; never replace an adjacent line.
 - On success, use the returned tag for the next edit. On other stale failures, use its fresh tag and numbered anchor window to re-author the patch. Never retry an unchanged no-op payload.
 
 Wrong:
 `PUT 4.=8:\n old context\n-new\n+new` (diff/context rows are invalid)
 `PUT 4.=8:` (empty PUT is not deletion)
-`PUT 4.=40:` to change one line (needlessly widened range)
+`PUT 11.=11:\n+new setting` replaces line 11; it does not add after it
 
 Right:
 `PUT 6.=6:\n+replacement`
 `CUT 9.=11`
 `PUT >3:\n+new line`
+`PUT >11:\n+new setting` to add after line 11 without changing it
 `PUT 12*:\n+/// Updated documentation\n+fn replacement() {}`]]
 
 local MULTIEDIT_DESCRIPTION = [[Make multiple find-and-replace edits to a single file atomically.
