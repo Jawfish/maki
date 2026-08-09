@@ -5,6 +5,7 @@ use maki_agent::agent;
 use maki_agent::mcp::config::McpServerStatus;
 use maki_agent::mcp::{McpHandle, McpSession};
 use maki_agent::permissions::PermissionManager;
+use maki_agent::review::{self, ReviewTarget};
 use maki_agent::template;
 use maki_agent::template::Vars;
 use maki_agent::tools::{
@@ -24,6 +25,9 @@ use tracing::error;
 use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
 use super::shared_queue::{QueueItem, QueueReceiver};
+
+/// Read-only: the reviewer investigates and reports, it never edits.
+const REVIEWER_AUDIENCE: ToolAudience = ToolAudience::RESEARCH_SUB;
 
 pub(super) struct AgentLoop {
     model_slot: Arc<ArcSwap<ModelSlot>>,
@@ -134,6 +138,7 @@ impl AgentLoop {
                 self.do_agent_run(input, event_tx, run_id).await
             }
             QueueItem::Compact { .. } => self.do_compact(&event_tx).await,
+            QueueItem::Review { target, .. } => self.do_review(*target, &event_tx, run_id).await,
         };
 
         if let Err(e) = result {
@@ -167,6 +172,97 @@ impl AgentLoop {
         let (provider, model) =
             agent::resolve_compaction_model(&slot.provider, &slot.model, self.timeouts);
         agent::compact(&*provider, &model, &mut self.history, event_tx).await
+    }
+
+    /// Codex-style review: the reviewer gets its own conversation, its own
+    /// rubric, and read-only tools. The parent model never sees the
+    /// investigation, only the verdict that lands in its history.
+    async fn do_review(
+        &mut self,
+        target: ReviewTarget,
+        event_tx: &EventSender,
+        run_id: u64,
+    ) -> Result<(), AgentError> {
+        let slot = self.model_slot.load();
+        let (trigger, cancel) = CancelToken::new();
+        self.set_cancel_trigger(run_id, trigger);
+
+        let (reviewer_tx, reviewer_rx) = flume::unbounded();
+        smol::spawn(relay_review_events(reviewer_rx, self.agent_tx.clone())).detach();
+
+        let mut history = History::new(Vec::new());
+        let result = {
+            let mut reviewer = Agent::new(
+                AgentParams {
+                    provider: Arc::clone(&slot.provider),
+                    model: slot.model.clone(),
+                    config: self.config.clone(),
+                    tool_output_lines: self.tool_output_lines,
+                    permissions: Arc::clone(&self.permissions),
+                    session_id: self.session_id.clone(),
+                    mailbox: None,
+                    timeouts: self.timeouts,
+                    file_tracker: FileReadTracker::fresh(),
+                    hashline: Arc::new(HashlineState::new()),
+                    prompt_slots: Arc::new(maki_agent::prompt::ResolvedSlots::default()),
+                    subagent_cancels: Arc::clone(&self.subagent_cancels),
+                    registry: Arc::clone(ToolRegistry::global_arc()),
+                    audience: REVIEWER_AUDIENCE,
+                },
+                AgentRunParams {
+                    history: &mut history,
+                    system: review::REVIEW_PROMPT.to_string(),
+                    event_tx: EventSender::new(reviewer_tx, run_id),
+                    tools: self.reviewer_tools(&slot.model),
+                },
+            )
+            .with_cancel(cancel);
+
+            reviewer
+                .run(AgentInput {
+                    message: target.prompt(),
+                    mode: maki_agent::AgentMode::Build,
+                    images: Vec::new(),
+                    preamble: Vec::new(),
+                    thinking: maki_providers::ThinkingConfig::default(),
+                    fast: false,
+                    workflow: false,
+                    prompt: None,
+                })
+                .await
+        };
+        self.clear_cancel_trigger(run_id);
+
+        match result {
+            Err(AgentError::Cancelled) => {
+                self.min_run_id = run_id + 1;
+                review::record_review(&mut self.history, None);
+                Err(AgentError::Cancelled)
+            }
+            Err(e) => Err(e),
+            Ok(()) => {
+                let output = review::parse_review_output(review::final_assistant_text(&history));
+                let text = review::record_review(&mut self.history, Some(&output));
+                event_tx.send(AgentEvent::TextDelta { text })?;
+                event_tx.send(AgentEvent::Done {
+                    usage: TokenUsage::default(),
+                    num_turns: 1,
+                    stop_reason: None,
+                })
+            }
+        }
+    }
+
+    /// The reviewer reads and runs commands but never writes: the default
+    /// audience filter already keeps `write`, `edit`, and `task` out.
+    fn reviewer_tools(&self, model: &Model) -> Value {
+        let filter = ToolFilter::from_config(&self.config, model, &[]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: REVIEWER_AUDIENCE,
+            workflow: false,
+        };
+        ToolRegistry::global().definitions(&self.vars, &ctx, model.supports_tool_examples())
     }
 
     async fn do_agent_run(
@@ -331,6 +427,27 @@ impl AgentLoop {
                 });
             }
         }
+    }
+}
+
+/// Forwards the reviewer's progress into the parent transcript so the user can
+/// watch it work. Its assistant text is dropped: the review is delivered once,
+/// as the rendered verdict, and its `Done` and `Error` belong to the caller.
+async fn relay_review_events(
+    reviewer_rx: flume::Receiver<Envelope>,
+    parent_tx: flume::Sender<Envelope>,
+) {
+    while let Ok(envelope) = reviewer_rx.recv_async().await {
+        if matches!(
+            envelope.event,
+            AgentEvent::TextDelta { .. }
+                | AgentEvent::Done { .. }
+                | AgentEvent::Error { .. }
+                | AgentEvent::SubagentHistory { .. }
+        ) {
+            continue;
+        }
+        let _ = parent_tx.send_async(envelope).await;
     }
 }
 

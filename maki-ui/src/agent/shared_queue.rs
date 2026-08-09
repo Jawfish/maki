@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use maki_agent::review::ReviewTarget;
 use maki_agent::{AgentInput, ExtractedCommand, ImageSource, InterruptSource};
 
 use crate::components::input::Submission;
@@ -17,6 +18,7 @@ use crate::components::queue_panel::QueueEntry;
 use crate::theme;
 
 const COMPACT_LABEL: &str = "/compact";
+const REVIEW_LABEL: &str = "/review ";
 
 type Items = Arc<Mutex<VecDeque<QueueItem>>>;
 
@@ -49,12 +51,18 @@ pub(crate) enum QueueItem {
     Compact {
         run_id: u64,
     },
+    Review {
+        run_id: u64,
+        target: Box<ReviewTarget>,
+    },
 }
 
 impl QueueItem {
     pub(crate) fn run_id(&self) -> u64 {
         match self {
-            Self::Message { run_id, .. } | Self::Compact { run_id } => *run_id,
+            Self::Message { run_id, .. }
+            | Self::Compact { run_id }
+            | Self::Review { run_id, .. } => *run_id,
         }
     }
 
@@ -71,13 +79,21 @@ impl QueueItem {
                     .fg
                     .unwrap_or(theme::current().foreground),
             },
+            Self::Review { target, .. } => QueueEntry {
+                text: Cow::Owned(format!("{REVIEW_LABEL}{}", target.hint())),
+                color: theme::current()
+                    .queue
+                    .fg
+                    .unwrap_or(theme::current().foreground),
+            },
         }
     }
 
-    fn into_extracted_command(self) -> ExtractedCommand {
+    fn into_extracted_command(self) -> Option<ExtractedCommand> {
         match self {
-            Self::Message { input, run_id, .. } => ExtractedCommand::Interrupt(input, run_id),
-            Self::Compact { run_id } => ExtractedCommand::Compact(run_id),
+            Self::Message { input, run_id, .. } => Some(ExtractedCommand::Interrupt(input, run_id)),
+            Self::Compact { run_id } => Some(ExtractedCommand::Compact(run_id)),
+            Self::Review { .. } => None,
         }
     }
 
@@ -87,7 +103,7 @@ impl QueueItem {
     fn visible_in_panel(&self) -> bool {
         match self {
             Self::Message { displayed, .. } => !displayed,
-            Self::Compact { .. } => true,
+            Self::Compact { .. } | Self::Review { .. } => true,
         }
     }
 }
@@ -149,7 +165,7 @@ impl QueueSender {
             .filter(|item| item.visible_in_panel())
             .filter_map(|item| match item {
                 QueueItem::Message { text, .. } => Some(text.clone()),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::Review { .. } => None,
             })
             .collect()
     }
@@ -180,9 +196,17 @@ impl QueueReceiver {
     }
 }
 
+/// Peeks before popping: a review runs in the agent loop, not inside a turn,
+/// so it has to stay queued until the current run finishes.
 impl InterruptSource for QueueReceiver {
     fn poll(&self) -> Option<ExtractedCommand> {
-        self.pop().map(QueueItem::into_extracted_command)
+        let mut items = lock(&self.items);
+        match items.front() {
+            Some(QueueItem::Message { .. } | QueueItem::Compact { .. }) => items
+                .pop_front()
+                .and_then(QueueItem::into_extracted_command),
+            _ => None,
+        }
     }
 }
 
@@ -209,15 +233,31 @@ mod tests {
             displayed,
         }
     }
+    fn review() -> QueueItem {
+        QueueItem::Review {
+            run_id: 0,
+            target: Box::new(ReviewTarget::UncommittedChanges),
+        }
+    }
 
     #[test_case(msg(false),                       true  ; "deferred_message_visible")]
     #[test_case(msg(true),                        false ; "displayed_message_hidden")]
     #[test_case(QueueItem::Compact { run_id: 0 }, true  ; "compact_visible")]
+    #[test_case(review(),                         true  ; "review_visible")]
     fn panel_visibility(item: QueueItem, visible: bool) {
         let (tx, _rx) = queue();
         tx.push(item);
         let expected = usize::from(visible);
         assert_eq!(tx.panel_len(), expected);
         assert_eq!(tx.panel_entries().len(), expected);
+    }
+
+    #[test]
+    fn a_queued_review_blocks_in_turn_interrupts() {
+        let (tx, rx) = queue();
+        tx.push(review());
+        tx.push(msg(false));
+        assert!(rx.poll().is_none());
+        assert_eq!(tx.len(), 2);
     }
 }
