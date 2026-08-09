@@ -2057,6 +2057,26 @@ fn setup_compaction_buffer(lua_src: &str, expected: maki_config::CompactionBuffe
 }
 
 #[test_case::test_case(
+    r#"maki.setup({ agent = { compaction_keep_recent = 8000 } })"#,
+    maki_config::CompactionBuffer::Tokens(8_000)
+    ; "compaction_keep_recent_tokens"
+)]
+#[test_case::test_case(
+    r#"maki.setup({ agent = { compaction_keep_recent = "25%" } })"#,
+    maki_config::CompactionBuffer::Percent(25)
+    ; "compaction_keep_recent_percent"
+)]
+fn setup_compaction_keep_recent(lua_src: &str, expected: maki_config::CompactionBuffer) {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let raw = host
+        .send_run_init_lua(lua_src.to_owned(), "test_init.lua".to_owned(), None)
+        .unwrap()
+        .expect("expected Some(RawConfig)");
+    assert_eq!(raw.agent.compaction_keep_recent, Some(expected));
+}
+
+#[test_case::test_case(
     "maki.setup({ ui = { splash_animaton = false } })",
     UNKNOWN_FIELD_ERR
     ; "unknown_field"

@@ -27,6 +27,7 @@ pub const MIN_MAX_INPUT_LINES: u32 = 1;
 
 pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
 pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percent(20);
+pub const DEFAULT_COMPACTION_KEEP_RECENT: CompactionBuffer = CompactionBuffer::Percent(15);
 
 pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_LOW_SPEED_TIMEOUT_SECS: u64 = 120;
@@ -39,9 +40,9 @@ pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
 pub const MIN_OUTPUT_BYTES: usize = 1024;
 pub const MIN_OUTPUT_LINES: usize = 10;
 pub const MIN_MAX_CONTINUATION_TURNS: u32 = 1;
-pub const MIN_COMPACTION_BUFFER: u32 = 1_000;
+pub const MIN_COMPACTION_TOKENS: u32 = 1_000;
 const MAX_COMPACTION_PERCENT: u8 = 99;
-const COMPACTION_BUFFER_EXPECTED: &str =
+const COMPACTION_SIZE_EXPECTED: &str =
     r#"a token count (e.g. 12000) or a percent of the context window (e.g. "20%")"#;
 pub const MIN_MOUSE_SCROLL_LINES: u32 = 1;
 pub const MIN_TOOL_OUTPUT_LINES: usize = 1;
@@ -418,17 +419,17 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
             type Value = CompactionBuffer;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str(COMPACTION_BUFFER_EXPECTED)
+                f.write_str(COMPACTION_SIZE_EXPECTED)
             }
 
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
                 u32::try_from(v)
                     .ok()
-                    .filter(|n| *n >= MIN_COMPACTION_BUFFER)
+                    .filter(|n| *n >= MIN_COMPACTION_TOKENS)
                     .map(CompactionBuffer::Tokens)
                     .ok_or_else(|| {
                         E::custom(format!(
-                            "compaction_buffer must be at least {MIN_COMPACTION_BUFFER} tokens"
+                            "compaction size must be at least {MIN_COMPACTION_TOKENS} tokens"
                         ))
                     })
             }
@@ -444,7 +445,7 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
                     .map(CompactionBuffer::Percent)
                     .ok_or_else(|| {
                         E::custom(format!(
-                            "invalid compaction_buffer {s:?}: expected {COMPACTION_BUFFER_EXPECTED}"
+                            "invalid compaction size {s:?}: expected {COMPACTION_SIZE_EXPECTED}"
                         ))
                     })
             }
@@ -461,6 +462,7 @@ pub struct AgentFileConfig {
     pub max_output_lines: Option<usize>,
     pub max_continuation_turns: Option<u32>,
     pub compaction_buffer: Option<CompactionBuffer>,
+    pub compaction_keep_recent: Option<CompactionBuffer>,
     pub stale_read_check: Option<bool>,
     pub hashline_edit: Option<bool>,
 }
@@ -474,6 +476,7 @@ impl AgentFileConfig {
             max_output_lines,
             max_continuation_turns,
             compaction_buffer,
+            compaction_keep_recent,
             stale_read_check,
             hashline_edit
         );
@@ -987,6 +990,9 @@ pub struct AgentConfig {
     #[config(default = DEFAULT_COMPACTION_BUFFER, ty = "u32 | string", default_doc = "20%", desc = "Context reserved for compaction: token count or percent of the context window (e.g. \"20%\")")]
     pub compaction_buffer: CompactionBuffer,
 
+    #[config(default = DEFAULT_COMPACTION_KEEP_RECENT, ty = "u32 | string", default_doc = "15%", desc = "Recent conversation kept verbatim after a compaction summary: token count or percent of the context window (e.g. \"15%\")")]
+    pub compaction_keep_recent: CompactionBuffer,
+
     #[config(
         default = true,
         desc = "Require re-reading a file that changed on disk before editing it"
@@ -1022,6 +1028,9 @@ impl AgentConfig {
                 .max_continuation_turns
                 .unwrap_or(DEFAULT_MAX_CONTINUATION_TURNS),
             compaction_buffer: file.compaction_buffer.unwrap_or(DEFAULT_COMPACTION_BUFFER),
+            compaction_keep_recent: file
+                .compaction_keep_recent
+                .unwrap_or(DEFAULT_COMPACTION_KEEP_RECENT),
             stale_read_check: file.stale_read_check.unwrap_or(true),
             hashline_edit: file.hashline_edit.unwrap_or(true),
             max_turns: None,
