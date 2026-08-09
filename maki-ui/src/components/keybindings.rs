@@ -133,6 +133,16 @@ pub mod key {
     pub const NEXT_CHAT: Bind = ctrl_bind!('n');
     pub const SCROLL_HALF_UP: Bind = ctrl_bind!('u');
     pub const SCROLL_HALF_DOWN: Bind = ctrl_bind!('d');
+    pub const SCROLL_HALF_UP_ALT: Bind = Bind {
+        code: KeyCode::Char('k'),
+        modifiers: KeyModifiers::ALT,
+        label: "Alt+K",
+    };
+    pub const SCROLL_HALF_DOWN_ALT: Bind = Bind {
+        code: KeyCode::Char('j'),
+        modifiers: KeyModifiers::ALT,
+        label: "Alt+J",
+    };
     pub const SCROLL_LINE_UP: Bind = ctrl_bind!('y');
     pub const SCROLL_LINE_DOWN: Bind = ctrl_bind!('e');
     pub const SCROLL_TOP: Bind = ctrl_bind!('g');

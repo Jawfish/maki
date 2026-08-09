@@ -477,6 +477,16 @@ impl App {
     }
 
     fn handle_ctrl(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
+        if key::SCROLL_HALF_UP_ALT.matches(key) {
+            let half = self.chats[self.active_chat].half_page();
+            self.active_chat().scroll(half);
+            return Some(vec![]);
+        }
+        if key::SCROLL_HALF_DOWN_ALT.matches(key) {
+            let half = self.chats[self.active_chat].half_page();
+            self.active_chat().scroll(-half);
+            return Some(vec![]);
+        }
         if !is_ctrl(&key) {
             return None;
         }

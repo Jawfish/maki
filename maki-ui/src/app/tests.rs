@@ -2,7 +2,7 @@ use super::*;
 use crate::agent::shared_queue;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
-use crate::components::keybindings::{KeybindContext, key as kb};
+use crate::components::keybindings::{Bind, KeybindContext, key as kb};
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
@@ -1303,6 +1303,24 @@ fn scroll_shortcuts_toggle_auto_scroll() {
     assert!(!app.chats[0].auto_scroll());
     app.update(Msg::Key(kb::SCROLL_BOTTOM.to_key_event()));
     assert!(app.chats[0].auto_scroll());
+}
+
+#[test_case(kb::SCROLL_HALF_UP, kb::SCROLL_HALF_UP_ALT ; "up")]
+#[test_case(kb::SCROLL_HALF_DOWN, kb::SCROLL_HALF_DOWN_ALT ; "down")]
+fn alternate_half_page_scroll_matches_native(native: Bind, alternate: Bind) {
+    let mut native_app = test_app();
+    let mut alternate_app = test_app();
+    native_app.update(Msg::Key(native.to_key_event()));
+    alternate_app.update(Msg::Key(alternate.to_key_event()));
+
+    assert_eq!(
+        native_app.active_chat().scroll_top(),
+        alternate_app.active_chat().scroll_top()
+    );
+    assert_eq!(
+        native_app.active_chat().auto_scroll(),
+        alternate_app.active_chat().auto_scroll()
+    );
 }
 
 #[test]
