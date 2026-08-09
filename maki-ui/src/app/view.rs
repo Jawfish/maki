@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use crate::components::Overlay;
 #[cfg(test)]
 use crate::components::keybindings::KeybindContext;
+use crate::components::keybindings::display_label;
 use crate::components::queue_panel;
 use crate::components::split_layout::{MIN_CHAT_ROWS, SplitLayout, carve};
 use crate::components::status_bar::{StatusBarContext, UsageStats};
@@ -260,7 +261,18 @@ impl App {
         if r.width > 0 {
             overlay_rect = r;
         }
-        let r = self.help_modal.view(frame, full);
+        let plugin_binds: Vec<(String, String)> = if self.help_modal.is_open() {
+            self.keymap_reader
+                .load()
+                .entries
+                .iter()
+                .filter(|e| !e.desc.is_empty())
+                .map(|e| (display_label(e.key, e.modifiers), e.desc.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let r = self.help_modal.view(frame, full, &plugin_binds);
         if r.width > 0 {
             overlay_rect = r;
         }

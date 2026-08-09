@@ -165,11 +165,9 @@ pub mod key {
         modifiers: KeyModifiers::ALT,
         label: "Alt+O",
     };
-    pub const REVIEW: Bind = Bind {
-        code: KeyCode::Char('r'),
-        modifiers: KeyModifiers::ALT,
-        label: "Alt+R",
-    };
+    /// Shares Ctrl+R with `REFRESH`: the usage modal intercepts it first,
+    /// so refresh wins while that modal is open.
+    pub const REVIEW: Bind = ctrl_bind!('r');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -448,6 +446,15 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
+        label: KeyLabel::Alt(
+            key::SCROLL_HALF_UP_ALT.label,
+            key::SCROLL_HALF_DOWN_ALT.label,
+        ),
+        description: "Scroll half page up / down",
+        context: KeybindContext::Editing,
+        platform: Platform::All,
+    },
+    Keybind {
         label: KeyLabel::Single(key::LINE_END.label),
         description: "Jump to end of line",
         context: KeybindContext::Editing,
@@ -611,6 +618,40 @@ pub(crate) fn key_event_to_string(key: &KeyEvent) -> String {
         KeyCode::PageDown => s.push_str("pagedown"),
         KeyCode::F(n) => write!(s, "f{n}").unwrap(),
         KeyCode::Insert => s.push_str("insert"),
+        _ => {}
+    }
+    s
+}
+
+pub fn display_label(code: KeyCode, modifiers: KeyModifiers) -> String {
+    let mut s = String::new();
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        s.push_str("Ctrl+");
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        s.push_str("Alt+");
+    }
+    if modifiers.contains(KeyModifiers::SHIFT) && !matches!(code, KeyCode::Char(_)) {
+        s.push_str("Shift+");
+    }
+    match code {
+        KeyCode::Char(' ') => s.push_str("Space"),
+        KeyCode::Char(c) => s.extend(c.to_uppercase()),
+        KeyCode::Enter => s.push_str("Enter"),
+        KeyCode::Esc => s.push_str("Esc"),
+        KeyCode::Tab => s.push_str("Tab"),
+        KeyCode::Backspace => s.push_str("Backspace"),
+        KeyCode::Delete => s.push_str("Del"),
+        KeyCode::Up => s.push('↑'),
+        KeyCode::Down => s.push('↓'),
+        KeyCode::Left => s.push('←'),
+        KeyCode::Right => s.push('→'),
+        KeyCode::Home => s.push_str("Home"),
+        KeyCode::End => s.push_str("End"),
+        KeyCode::PageUp => s.push_str("PageUp"),
+        KeyCode::PageDown => s.push_str("PageDown"),
+        KeyCode::F(n) => write!(s, "F{n}").unwrap(),
+        KeyCode::Insert => s.push_str("Insert"),
         _ => {}
     }
     s

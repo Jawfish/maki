@@ -2,7 +2,10 @@ local SKILL_FILE = "SKILL.md"
 local NOT_FOUND = "skill not found: "
 local REFERENCE_FILE = "lua-api.md"
 local REFERENCE_UNAVAILABLE = "(unavailable; full reference inlined below)"
+local NO_SKILLS = "No skills found"
+local PICKER_TITLE = " Skills "
 local shorten_path = require("maki.shorten_path")
+local ListPicker = require("maki.list_picker")
 local ToolView = require("maki.tool_view")
 local helpers = require("skill_helpers")
 local parse_frontmatter = helpers.parse_frontmatter
@@ -207,3 +210,36 @@ maki.api.register_tool({
     }
   end,
 })
+
+local function open_picker()
+  local skills = discover_skills()
+  local items = {}
+  for _, s in pairs(skills) do
+    items[#items + 1] = { label = s.name, detail = s.description }
+  end
+  if #items == 0 then
+    maki.ui.flash(NO_SKILLS)
+    return
+  end
+  table.sort(items, function(a, b)
+    return a.label < b.label
+  end)
+
+  local event = ListPicker.open(items, { title = PICKER_TITLE })
+  if event.type ~= "choice" then
+    return
+  end
+  local item = items[event.index]
+  local _, err = maki.session.prompt("Load the " .. item.label .. " skill and follow it.")
+  if err then
+    maki.ui.flash("Skill prompt failed: " .. err)
+  end
+end
+
+maki.api.register_command({
+  name = "/skills",
+  description = "Browse skills and ask the agent to load one",
+  handler = open_picker,
+})
+
+maki.keymap.set("n", "<A-p>", open_picker, { desc = "Browse skills" })

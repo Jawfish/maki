@@ -15,6 +15,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 const TITLE: &str = " Keybindings ";
+const PLUGINS_SECTION: &str = "Plugins";
 const KEY_COL_GAP: usize = 2;
 const PREFIX_TOP: &str = "  ";
 const PREFIX_CHILD: &str = "    ";
@@ -115,7 +116,12 @@ impl HelpModal {
         true
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
+    pub fn view(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        plugin_binds: &[(String, String)],
+    ) -> Rect {
         if !self.open {
             return Rect::default();
         }
@@ -127,6 +133,11 @@ impl HelpModal {
             .iter()
             .filter(|kb| kb.platform.is_visible())
             .map(|kb| kb.label.resolve().display_width())
+            .chain(
+                plugin_binds
+                    .iter()
+                    .map(|(label, _)| UnicodeWidthStr::width(label.as_str())),
+            )
             .max()
             .unwrap_or(0)
             + KEY_COL_GAP;
@@ -197,6 +208,24 @@ impl HelpModal {
                     spans.push(Span::styled(desc, theme.keybind_desc));
                     lines.push(Line::from(spans));
                 }
+            }
+        }
+
+        if !plugin_binds.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                format!("  {PLUGINS_SECTION}"),
+                theme.keybind_section,
+            )));
+            for (label, desc) in plugin_binds {
+                let trailing = key_col_width.saturating_sub(UnicodeWidthStr::width(label.as_str()));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{PREFIX_TOP}{label}{:trailing$}", ""),
+                        theme.keybind_key,
+                    ),
+                    Span::styled(desc.clone(), theme.keybind_desc),
+                ]));
             }
         }
 

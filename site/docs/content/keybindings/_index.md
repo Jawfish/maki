@@ -21,7 +21,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+O` | Open plan in editor |
 | `Ctrl+T` | Toggle plan panel |
 | `Ctrl+X` | Open tasks |
-| `Alt+R` | Review a code change |
+| `Ctrl+R` | Review a code change |
 
 ## Editing
 
@@ -36,6 +36,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+A` | Jump to start of line |
 | `Home` / `End` | Jump to start/end of line |
 | `Ctrl+U` / `Ctrl+D` | Scroll half page up / down |
+| `Alt+K` / `Alt+J` | Scroll half page up / down |
 | `Ctrl+E` | Jump to end of line |
 | `Ctrl+G` | Scroll to top |
 | `Ctrl+B` | Scroll to bottom |

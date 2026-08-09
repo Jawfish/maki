@@ -35,6 +35,7 @@ Type `/` in the input box to open the command palette.
 | `/memory` | View, edit, and delete memory files |
 | `/rename` | Rename the current session |
 | `/sessions` | Browse and switch sessions |
+| `/skills` | Browse skills and ask the agent to load one |
 
 ## Sessions
 
