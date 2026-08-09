@@ -581,6 +581,12 @@ impl<'t> EventLoop<'t> {
                 let actions = self.focused_app().compact();
                 self.dispatch(self.focused, actions);
             }
+            UiAction::CycleThinking => {
+                self.focused_app().cycle_thinking();
+            }
+            UiAction::Scroll(lines) => {
+                self.focused_app().scroll(lines);
+            }
             UiAction::OpenEditor { path, reply_tx } => {
                 let code = self.open_editor(self.focused, &path);
                 let _ = reply_tx.send(code);

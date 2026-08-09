@@ -271,6 +271,30 @@ fn compact(_lua: &Lua, #[ctx] tx: flume::Sender<UiAction>) -> LuaResult<()> {
     Ok(())
 }
 
+/// Cycles through the thinking options supported by the focused session's model.
+///
+/// @return
+/// @example
+/// maki.ui.cycle_thinking()
+#[lua_fn]
+fn cycle_thinking(_lua: &Lua, #[ctx] tx: flume::Sender<UiAction>) -> LuaResult<()> {
+    let _ = tx.try_send(UiAction::CycleThinking);
+    Ok(())
+}
+
+/// Scrolls the focused conversation by {lines}. Positive values scroll up and
+/// negative values scroll down.
+///
+/// @param lines integer Number of lines to scroll.
+/// @return
+/// @example
+/// maki.ui.scroll(1)
+#[lua_fn]
+fn scroll(_lua: &Lua, #[ctx] tx: flume::Sender<UiAction>, lines: i32) -> LuaResult<()> {
+    let _ = tx.try_send(UiAction::Scroll(lines));
+    Ok(())
+}
+
 /// Opens {path} in the user's `$EDITOR` (e.g. vim, nano) and waits for
 /// it to close. This suspends the TUI while the editor is running.
 /// Returns the editor's exit code so you can check if the user saved.
@@ -444,7 +468,7 @@ lua_table! {
     extend "maki.ui" => pub(crate) fn add_ui_fns(), DOCS [
         buf, theme_color, highlight, markdown, humantime, terminal_size,
         display_width, truncate_text,
-        manual flash, manual open_model_picker, manual compact, manual open_editor, manual open_win, manual set_status_hint,
+        manual flash, manual open_model_picker, manual compact, manual cycle_thinking, manual scroll, manual open_editor, manual open_win, manual set_status_hint,
     ]
 }
 
@@ -460,6 +484,8 @@ pub(crate) fn create_ui_table(
         flash__register(&t, lua, tx.clone())?;
         open_model_picker__register(&t, lua, tx.clone())?;
         compact__register(&t, lua, tx.clone())?;
+        cycle_thinking__register(&t, lua, tx.clone())?;
+        scroll__register(&t, lua, tx.clone())?;
         open_editor__register(&t, lua, tx.clone())?;
         open_win__register(&t, lua, tx)?;
     }

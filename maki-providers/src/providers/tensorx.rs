@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{AgentError, Effort, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 use super::{KeyPool, ResolvedAuth};
@@ -40,6 +40,21 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 struct TensorXModelInfo {
     has_thinking: bool,
     has_reasoning_effort: bool,
+}
+
+pub(crate) fn thinking_efforts(model: &Model) -> Vec<Effort> {
+    let has_reasoning_effort = crate::model_registry::model_registry()
+        .read()
+        .unwrap()
+        .discovered("tensorx", &model.id)
+        .and_then(|info| info.provider_info.clone())
+        .and_then(|info| Arc::downcast::<TensorXModelInfo>(info).ok())
+        .is_some_and(|info| info.has_reasoning_effort);
+    if has_reasoning_effort {
+        dialect::TENSORX.supported.to_vec()
+    } else {
+        Vec::new()
+    }
 }
 
 pub struct TensorX {

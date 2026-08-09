@@ -2547,6 +2547,30 @@ fn compact_sends_ui_action() {
     assert!(matches!(action, maki_lua::UiAction::Compact));
 }
 
+#[test]
+fn cycle_thinking_sends_ui_action() {
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    host.load_source("p", "maki.ui.cycle_thinking()").unwrap();
+
+    let action = host
+        .ui_action_rx()
+        .recv_timeout(Duration::from_secs(5))
+        .expect("thinking cycle action was not sent");
+    assert!(matches!(action, maki_lua::UiAction::CycleThinking));
+}
+
+#[test]
+fn scroll_sends_ui_action() {
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    host.load_source("p", "maki.ui.scroll(-1)").unwrap();
+
+    let action = host
+        .ui_action_rx()
+        .recv_timeout(Duration::from_secs(5))
+        .expect("scroll action was not sent");
+    assert!(matches!(action, maki_lua::UiAction::Scroll(-1)));
+}
+
 #[test_case::test_case(
     r#"maki.api.register_command({ name = "", handler = function() end })"#,
     "non-empty" ; "empty_name"

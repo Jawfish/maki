@@ -669,6 +669,19 @@ fn effort_dialect(info: &CopilotModelInfo) -> EffortDialect<'_> {
     }
 }
 
+pub(crate) fn thinking_efforts(model: &Model) -> Vec<Effort> {
+    crate::model_registry::model_registry()
+        .read()
+        .unwrap()
+        .discovered("copilot", &model.id)
+        .and_then(|info| info.provider_info.clone())
+        .and_then(|info| Arc::downcast::<CopilotModelInfo>(info).ok())
+        .map_or_else(
+            || dialect::PREFER_HIGH.supported.to_vec(),
+            |info| effort_dialect(&info).supported.to_vec(),
+        )
+}
+
 fn apply_responses_reasoning(
     body: &mut Value,
     thinking: ThinkingConfig,

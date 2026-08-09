@@ -90,6 +90,16 @@ fn effort_dialect(info: Option<&OpenRouterModelInfo>) -> EffortDialect<'_> {
     }
 }
 
+pub(crate) fn thinking_efforts(model: &Model) -> Vec<Effort> {
+    let info = crate::model_registry::model_registry()
+        .read()
+        .unwrap()
+        .discovered("openrouter", &model.id)
+        .and_then(|info| info.provider_info.clone())
+        .and_then(|info| Arc::downcast::<OpenRouterModelInfo>(info).ok());
+    effort_dialect(info.as_deref()).supported.to_vec()
+}
+
 fn parse_model(m: &Value) -> Option<ModelInfo> {
     // Filter: only text input/output models
     let architecture = m["architecture"].as_object()?;

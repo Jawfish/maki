@@ -3393,6 +3393,36 @@ fn thinking_toggle_cycles_off_adaptive() {
 }
 
 #[test]
+fn thinking_cycle_uses_active_model_efforts() {
+    let mut app = test_app();
+    app.state.model = Model::from_spec("openai/gpt-5.6-sol").unwrap();
+
+    let expected = [
+        ThinkingConfig::Adaptive,
+        ThinkingConfig::Effort(Effort::Minimal),
+        ThinkingConfig::Effort(Effort::Low),
+        ThinkingConfig::Effort(Effort::Medium),
+        ThinkingConfig::Effort(Effort::High),
+        ThinkingConfig::Off,
+    ];
+    for thinking in expected {
+        app.cycle_thinking();
+        assert_eq!(app.state.thinking, thinking);
+    }
+}
+
+#[test]
+fn thinking_cycle_unsupported_model_preserves_state() {
+    let mut app = test_app();
+    app.state.model.supports_thinking_override = Some(false);
+
+    app.cycle_thinking();
+
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+    assert!(app.status_bar.flash_text().is_some());
+}
+
+#[test]
 fn thinking_explicit_args() {
     let mut app = test_app();
 

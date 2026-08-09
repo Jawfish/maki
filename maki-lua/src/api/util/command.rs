@@ -431,6 +431,8 @@ pub enum UiAction {
     },
     OpenModelPicker,
     Compact,
+    CycleThinking,
+    Scroll(i32),
     Session {
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,

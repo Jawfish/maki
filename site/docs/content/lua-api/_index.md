@@ -4181,6 +4181,43 @@ maki.ui.compact()
 
 ---
 
+### `maki.ui.cycle_thinking()` {#maki-ui-cycle_thinking}
+
+```lua
+maki.ui.cycle_thinking()
+```
+
+Cycles through the thinking options supported by the focused session's model.
+
+**Example:**
+
+```lua
+maki.ui.cycle_thinking()
+```
+
+---
+
+### `maki.ui.scroll()` {#maki-ui-scroll}
+
+```lua
+maki.ui.scroll({lines})
+```
+
+Scrolls the focused conversation by {lines}. Positive values scroll up and
+negative values scroll down.
+
+**Parameters:**
+
+- `{lines}` (`integer`) Number of lines to scroll.
+
+**Example:**
+
+```lua
+maki.ui.scroll(1)
+```
+
+---
+
 ### `maki.ui.open_editor()` {#maki-ui-open_editor}
 
 ```lua

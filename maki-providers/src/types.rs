@@ -551,7 +551,7 @@ impl ThinkingConfig {
     /// Models from [`ADAPTIVE_SINCE`] on reject `type: "enabled"` with a 400. A
     /// version check, not an allowlist, so future releases and new families
     /// work automatically.
-    fn requires_adaptive(model_id: &str) -> bool {
+    pub(crate) fn requires_adaptive(model_id: &str) -> bool {
         claude_version(model_id).is_some_and(|(family, version)| {
             version
                 >= if family == OPUS {
@@ -602,6 +602,20 @@ impl ThinkingConfig {
             .map_err(|_| THINKING_USAGE)
     }
 
+    pub fn cycle(self, supported: &[Effort], max_budget: Option<u32>) -> Self {
+        match self {
+            Self::Off => Self::Adaptive,
+            Self::Adaptive if supported.is_empty() => Self::Off,
+            Self::Adaptive => Self::Effort(supported[0]),
+            Self::Effort(effort) => cycle_effort(effort.snap(supported), supported),
+            Self::Budget(tokens) => {
+                let effort =
+                    Effort::from_budget(tokens, max_budget.unwrap_or(FALLBACK_MAX_THINKING_BUDGET));
+                cycle_effort(effort.snap(supported), supported)
+            }
+        }
+    }
+
     pub fn status_label(self) -> Option<Cow<'static, str>> {
         match self {
             Self::Off => None,
@@ -621,6 +635,15 @@ impl std::fmt::Display for ThinkingConfig {
             Self::Budget(n) => write!(f, "{n}"),
         }
     }
+}
+
+fn cycle_effort(current: Effort, supported: &[Effort]) -> ThinkingConfig {
+    supported
+        .iter()
+        .position(|effort| *effort == current)
+        .and_then(|index| supported.get(index + 1))
+        .copied()
+        .map_or(ThinkingConfig::Off, ThinkingConfig::Effort)
 }
 
 impl From<StoredThinking> for ThinkingConfig {

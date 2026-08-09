@@ -9,7 +9,7 @@ use std::ops::AddAssign;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use maki_storage::sessions::{MIN_THINKING_BUDGET, StoredTokenUsage};
+use maki_storage::sessions::{Effort, MIN_THINKING_BUDGET, StoredTokenUsage};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ManifestRegistry, ProviderManifest};
@@ -301,6 +301,30 @@ impl Model {
             .discovered(manifest.slug, &self.id)
             .and_then(|d| d.supports_thinking)
             .unwrap_or(manifest.supports_thinking)
+    }
+
+    pub fn thinking_efforts(&self) -> Vec<Effort> {
+        if !self.supports_thinking() {
+            return Vec::new();
+        }
+        let Some(manifest) = ManifestRegistry::for_slug(&self.provider) else {
+            return Vec::new();
+        };
+        match manifest.slug {
+            "anthropic" if crate::types::ThinkingConfig::requires_adaptive(&self.id) => {
+                crate::dialect::ANTHROPIC_ADAPTIVE.supported.to_vec()
+            }
+            "anthropic" | "google" | "ollama" | "llama-cpp" => Effort::ALL.to_vec(),
+            "openai" | "synthetic" => crate::dialect::STANDARD.supported.to_vec(),
+            "copilot" => crate::providers::copilot::thinking_efforts(self),
+            "mistral" => crate::dialect::HIGH_ONLY.supported.to_vec(),
+            "zai" => crate::dialect::GLM.supported.to_vec(),
+            "deepseek" => crate::dialect::DEEPSEEK.supported.to_vec(),
+            "openrouter" => crate::providers::openrouter::thinking_efforts(self),
+            "tensorx" => crate::providers::tensorx::thinking_efforts(self),
+            "opencode" => crate::dialect::PREFER_HIGH.supported.to_vec(),
+            _ => Vec::new(),
+        }
     }
 
     pub fn supports_vision(&self) -> bool {

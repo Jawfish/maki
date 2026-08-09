@@ -340,6 +340,10 @@ impl App {
         self.active_chat().set_scroll_top(top);
     }
 
+    pub(crate) fn scroll(&mut self, lines: i32) {
+        self.active_chat().scroll(lines);
+    }
+
     fn clear_selection_unless_pending_copy(&mut self) {
         if !self
             .selection_state
@@ -1204,6 +1208,19 @@ impl App {
         }
         self.status = Status::Streaming;
         vec![Action::Compact]
+    }
+
+    pub fn cycle_thinking(&mut self) {
+        if !self.state.model.supports_thinking() {
+            self.flash("Thinking requires a model that supports it".into());
+            return;
+        }
+        let thinking = self.state.thinking.cycle(
+            &self.state.model.thinking_efforts(),
+            self.state.model.max_thinking_budget(),
+        );
+        self.state.thinking = thinking;
+        self.flash(format!("Thinking: {thinking}"));
     }
 
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
