@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-Maki ships with 21 built-in tools in this reference (19 on by default, 2 opt-in via plugin options). Tools marked **opt-in** are off until you enable them under `plugins` in [Configuration](/docs/configuration/).
+Maki ships with 20 built-in tools in this reference (18 on by default, 2 opt-in via plugin options). Tools marked **opt-in** are off until you enable them under `plugins` in [Configuration](/docs/configuration/).
 
 ## File Operations
 
@@ -168,15 +168,6 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 | `output_schema` | string | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
-
-### `review` *(lua plugin)*
-
-Review a code change in a separate reviewer thread. It reads the diff on its own and returns prioritized findings, so use it instead of reviewing large changes inline.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `hint` | string | no | Short label for the run, e.g. "current changes". Defaults to the instructions. |
-| `instructions` | string | yes | What to review, e.g. "Review the code changes introduced by commit abc123 with `git show`." Name the diff, commit, or range so the reviewer can find the change itself. |
 
 ### `todo_write` *(lua plugin)*
 
