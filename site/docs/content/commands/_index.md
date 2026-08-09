@@ -33,6 +33,7 @@ Type `/` in the input box to open the command palette.
 | `/reload` | Reload plugins and config |
 | `/memory` | View, edit, and delete memory files |
 | `/rename` | Rename the current session |
+| `/review` | Review code changes in a reviewer thread |
 | `/sessions` | Browse and switch sessions |
 
 ## Sessions
