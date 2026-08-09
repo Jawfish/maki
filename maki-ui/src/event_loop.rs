@@ -1029,6 +1029,11 @@ impl<'t> EventLoop<'t> {
                 let run_id = rt.app.run_id;
                 rt.handles.queue.push(QueueItem::Compact { run_id });
             }
+            Action::Review(target) => {
+                let rt = &mut self.sessions[idx];
+                let run_id = rt.app.run_id;
+                rt.handles.queue.push(QueueItem::Review { run_id, target });
+            }
             Action::ToggleMcp(server_name, enabled) => {
                 self.sessions[idx].handles.send_mcp(McpCommand::Toggle {
                     server: server_name,

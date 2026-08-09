@@ -165,6 +165,11 @@ pub mod key {
         modifiers: KeyModifiers::ALT,
         label: "Alt+O",
     };
+    pub const REVIEW: Bind = Bind {
+        code: KeyCode::Char('r'),
+        modifiers: KeyModifiers::ALT,
+        label: "Alt+R",
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -358,6 +363,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::TASKS.label),
         description: "Open tasks",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::REVIEW.label),
+        description: "Review a code change",
         context: KeybindContext::General,
         platform: Platform::All,
     },

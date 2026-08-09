@@ -17,6 +17,7 @@ pub(crate) mod permission_prompt;
 pub(crate) mod plan_form;
 pub(crate) mod progress_bar;
 pub mod queue_panel;
+pub(crate) mod review_picker;
 pub(crate) mod rewind_picker;
 pub(crate) mod scrollbar;
 pub(crate) mod search_modal;
@@ -32,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
+use maki_agent::review::ReviewTarget;
 use maki_agent::{BufferSnapshot, ToolInput, ToolOutput};
 use maki_providers::{Message, ModelTier};
 use ratatui::text::{Line, Span};
@@ -201,6 +203,7 @@ pub enum Action {
     RefreshModels,
     RefreshUsage,
     Compact,
+    Review(Box<ReviewTarget>),
     ToggleMcp(String, bool),
     OpenEditor(PathBuf),
     EditInputInEditor,

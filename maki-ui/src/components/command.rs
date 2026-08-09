@@ -35,6 +35,11 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         max_args: 0,
     },
     BuiltinCommand {
+        name: "/review",
+        description: "Review a code change in a separate reviewer thread",
+        max_args: usize::MAX,
+    },
+    BuiltinCommand {
         name: "/new",
         description: "Start a new session",
         max_args: 0,
@@ -597,9 +602,9 @@ mod tests {
     fn sample_custom() -> Arc<[CustomCommand]> {
         Arc::from([
             CustomCommand {
-                name: "review".into(),
-                description: "Code review".into(),
-                content: "Review $ARGUMENTS".into(),
+                name: "audit".into(),
+                description: "Code audit".into(),
+                content: "Audit $ARGUMENTS".into(),
                 scope: maki_agent::command::CommandScope::Project,
                 accepts_args: true,
             },
@@ -643,7 +648,7 @@ mod tests {
 
     #[test]
     fn filter_custom_by_substring() {
-        let p = synced_with_custom("/review", sample_custom());
+        let p = synced_with_custom("/audit", sample_custom());
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
         assert!(matches!(p.filtered[0].command_type, CommandType::Custom(0)));
@@ -695,7 +700,7 @@ mod tests {
 
     #[test]
     fn custom_command_with_args_stays_active() {
-        let p = synced_with_custom("/project:review some args", sample_custom());
+        let p = synced_with_custom("/project:audit some args", sample_custom());
         assert!(p.is_active());
     }
 
@@ -724,10 +729,10 @@ mod tests {
     fn confirm_custom_command() {
         let custom = sample_custom();
         let mut p = CommandPalette::new(custom, empty_snapshot(), LuaCommandReader::empty());
-        p.sync("/project:review");
+        p.sync("/project:audit");
         assert!(p.is_active());
-        let cmd = p.confirm("/project:review some-file.rs").unwrap();
-        assert_eq!(cmd.name, "/project:review");
+        let cmd = p.confirm("/project:audit some-file.rs").unwrap();
+        assert_eq!(cmd.name, "/project:audit");
         assert_eq!(cmd.args, "some-file.rs");
     }
 
@@ -735,9 +740,9 @@ mod tests {
     fn find_custom_command_lookup() {
         let custom = sample_custom();
         let p = CommandPalette::new(custom, empty_snapshot(), LuaCommandReader::empty());
-        let found = p.find_custom_command("/project:review");
+        let found = p.find_custom_command("/project:audit");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().content, "Review $ARGUMENTS");
+        assert_eq!(found.unwrap().content, "Audit $ARGUMENTS");
         assert!(p.find_custom_command("/nonexistent").is_none());
     }
 

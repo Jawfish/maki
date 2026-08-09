@@ -39,6 +39,7 @@ use crate::components::mcp_picker::{McpPicker, McpPickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::permission_prompt::PermissionPrompt;
 use crate::components::plan_form::{PlanForm, PlanFormAction};
+use crate::components::review_picker::{ReviewPicker, ReviewPickerAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
 use crate::components::scrollbar;
 use crate::components::search_modal::{SearchAction, SearchModal};
@@ -53,6 +54,7 @@ use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use maki_agent::permissions::PermissionManager;
+use maki_agent::review::ReviewTarget;
 use maki_agent::{
     AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
     SharedMessages, SubagentInfo,
@@ -145,6 +147,7 @@ pub struct App {
     pub(super) login_picker: LoginPicker,
     pub(super) mcp_picker: McpPicker,
     pub(super) rewind_picker: RewindPicker,
+    pub(super) review_picker: ReviewPicker,
     pub(super) help_modal: HelpModal,
     pub(super) usage_modal: UsageModal,
     pub(super) btw_modal: BtwModal,
@@ -236,6 +239,7 @@ impl App {
             login_picker: LoginPicker::new(),
             mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors),
             rewind_picker: RewindPicker::new(),
+            review_picker: ReviewPicker::new(),
             help_modal: HelpModal::new(),
             usage_modal: UsageModal::new(),
             btw_modal: BtwModal::new(typewriter),
@@ -436,6 +440,7 @@ impl App {
         }
         try_picker!(self.rewind_picker);
         try_picker!(self.task_picker);
+        try_picker!(self.review_picker);
         try_picker!(self.model_picker);
         try_picker!(self.file_picker);
         let zone = self.zone_at(row, column)?.zone;
@@ -508,6 +513,10 @@ impl App {
         }
         if key::TASKS.matches(key) {
             self.open_tasks();
+            return Some(vec![]);
+        }
+        if key::REVIEW.matches(key) {
+            self.review_picker.open();
             return Some(vec![]);
         }
         if key::PREV_CHAT.matches(key) {
@@ -660,6 +669,16 @@ impl App {
                 PickerAction::Close => {
                     self.active_chat = self.task_picker_original.take().unwrap_or(0);
                     vec![]
+                }
+            });
+        }
+
+        if self.review_picker.is_open() {
+            return Some(match self.review_picker.handle_key(key) {
+                ReviewPickerAction::Consumed | ReviewPickerAction::Close => vec![],
+                ReviewPickerAction::Select(target) => {
+                    self.review_picker.close();
+                    self.review(target)
                 }
             });
         }
@@ -1221,6 +1240,28 @@ impl App {
         vec![Action::Compact]
     }
 
+    /// `/review` with no arguments picks a target; with arguments the text is
+    /// the review instruction, so there is nothing to pick.
+    pub fn open_review(&mut self, instructions: &str) -> Vec<Action> {
+        let instructions = instructions.trim();
+        if instructions.is_empty() {
+            self.review_picker.open();
+            return vec![];
+        }
+        self.review(ReviewTarget::Custom {
+            instructions: instructions.to_owned(),
+        })
+    }
+
+    fn review(&mut self, target: ReviewTarget) -> Vec<Action> {
+        if self.status == Status::Streaming {
+            self.queue_review(target);
+            return vec![];
+        }
+        self.status = Status::Streaming;
+        vec![Action::Review(Box::new(target))]
+    }
+
     pub fn cycle_thinking(&mut self) {
         if !self.state.model.supports_thinking() {
             self.flash("Thinking requires a model that supports it".into());
@@ -1242,6 +1283,7 @@ impl App {
                 vec![]
             }
             "/compact" => self.compact(),
+            "/review" => self.open_review(&cmd.args),
             "/help" => {
                 self.help_modal.toggle();
                 vec![]
@@ -1468,7 +1510,7 @@ impl App {
         vec![]
     }
 
-    fn overlays(&self) -> [&dyn Overlay; 13] {
+    fn overlays(&self) -> [&dyn Overlay; 14] {
         [
             &self.help_modal,
             &self.usage_modal,
@@ -1478,6 +1520,7 @@ impl App {
             &self.file_picker,
             &self.task_picker,
             &self.rewind_picker,
+            &self.review_picker,
             &self.theme_picker,
             &self.model_picker,
             &self.login_picker,
@@ -1486,7 +1529,7 @@ impl App {
         ]
     }
 
-    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 13] {
+    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 14] {
         [
             &mut self.help_modal,
             &mut self.usage_modal,
@@ -1496,6 +1539,7 @@ impl App {
             &mut self.file_picker,
             &mut self.task_picker,
             &mut self.rewind_picker,
+            &mut self.review_picker,
             &mut self.theme_picker,
             &mut self.model_picker,
             &mut self.login_picker,
@@ -1601,6 +1645,7 @@ impl App {
         try_picker!(self.task_picker);
         try_picker!(self.rewind_picker);
         try_picker!(self.theme_picker);
+        try_picker!(self.review_picker);
         try_picker!(self.model_picker);
         try_picker!(self.mcp_picker);
         try_picker!(self.login_picker);

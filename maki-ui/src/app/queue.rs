@@ -1,6 +1,7 @@
 //! Queue for messages typed while the agent is busy.
 
 use maki_agent::AgentInput;
+use maki_agent::review::ReviewTarget;
 
 use super::{Action, App, Status, format_with_images};
 
@@ -189,6 +190,16 @@ impl App {
         };
         shared.push(QueueItem::Compact {
             run_id: self.run_id,
+        });
+    }
+
+    pub(super) fn queue_review(&mut self, target: ReviewTarget) {
+        let Some(ref shared) = self.queue.shared else {
+            return;
+        };
+        shared.push(QueueItem::Review {
+            run_id: self.run_id,
+            target: Box::new(target),
         });
     }
 
