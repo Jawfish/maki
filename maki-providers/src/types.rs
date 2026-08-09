@@ -179,6 +179,9 @@ pub enum MessageKind {
     /// The host noticed it and passed it to the model. It stays in session
     /// history for conversation order but is hidden from user-facing views.
     Observation,
+    /// A compaction summary standing in for the messages it replaced. Marked
+    /// so the next compaction can update it instead of summarizing it again.
+    Summary,
 }
 
 impl MessageKind {
@@ -224,6 +227,18 @@ impl Message {
 
     pub fn is_observation(&self) -> bool {
         self.kind == MessageKind::Observation
+    }
+
+    /// The text of a compaction summary, for the next compaction to update.
+    pub fn summary_text(&self) -> Option<&str> {
+        (self.kind == MessageKind::Summary)
+            .then(|| self.first_text_content())
+            .flatten()
+    }
+
+    pub fn into_summary(mut self) -> Self {
+        self.kind = MessageKind::Summary;
+        self
     }
 
     pub fn user(text: String) -> Self {
