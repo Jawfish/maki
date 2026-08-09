@@ -345,6 +345,18 @@ fn altgr_chars_not_swallowed_by_ctrl_handler() {
     assert_eq!(app.input_box.buffer.value(), "hi\\");
 }
 
+#[test]
+fn shifted_letter_preserves_uppercase_input() {
+    let mut app = test_app();
+
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('A'),
+        KeyModifiers::SHIFT,
+    )));
+
+    assert_eq!(app.input_box.buffer.value(), "A");
+}
+
 #[test_case(Status::Idle      ; "idle")]
 #[test_case(Status::Streaming ; "streaming")]
 fn paste_works_regardless_of_status(status: Status) {
@@ -3231,6 +3243,20 @@ fn override_shadows_quit_builtin() {
         ExitRequest::None,
         "override must consume Ctrl+C before the built-in quit handler runs"
     );
+}
+
+#[test]
+fn override_matches_backtab_as_shift_tab() {
+    let mut app = test_app();
+    let probe = install_override(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
+
+    let actions = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    )));
+
+    assert!(actions.is_empty());
+    assert!(probe.try_recv().is_some(), "{OVERRIDE_DISPATCHED}");
 }
 
 #[test]

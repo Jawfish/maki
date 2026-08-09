@@ -203,7 +203,12 @@ fn parse_bracketed(inner: &str) -> Result<(KeyCode, KeyModifiers), String> {
         }
     }
 
-    let key = parse_key_name(rest)?;
+    let key = match parse_key_name(rest)? {
+        KeyCode::Char(character) if modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Char(character.to_ascii_lowercase())
+        }
+        key => key,
+    };
     Ok((key, modifiers))
 }
 
@@ -340,7 +345,7 @@ mod tests {
     use test_case::test_case;
 
     #[test_case("<C-t>", KeyCode::Char('t'), KeyModifiers::CONTROL ; "ctrl_t")]
-    #[test_case("<C-T>", KeyCode::Char('T'), KeyModifiers::CONTROL ; "ctrl_shift_t")]
+    #[test_case("<C-T>", KeyCode::Char('T'), KeyModifiers::CONTROL ; "ctrl_upper_t")]
     #[test_case("<A-x>", KeyCode::Char('x'), KeyModifiers::ALT ; "alt_x")]
     #[test_case("<M-x>", KeyCode::Char('x'), KeyModifiers::ALT ; "meta_x")]
     #[test_case("<S-Tab>", KeyCode::Tab, KeyModifiers::SHIFT ; "shift_tab")]
@@ -367,6 +372,7 @@ mod tests {
     #[test_case("a", KeyCode::Char('a'), KeyModifiers::NONE ; "plain_a")]
     #[test_case("z", KeyCode::Char('z'), KeyModifiers::NONE ; "plain_z")]
     #[test_case("<C-S-a>", KeyCode::Char('a'), KeyModifiers::from_bits_truncate(KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits()) ; "ctrl_shift_a")]
+    #[test_case("<C-S-J>", KeyCode::Char('j'), KeyModifiers::from_bits_truncate(KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits()) ; "ctrl_shift_upper_j")]
     #[test_case("<Ctrl-x>", KeyCode::Char('x'), KeyModifiers::CONTROL ; "ctrl_long_x")]
     #[test_case("<Alt-j>", KeyCode::Char('j'), KeyModifiers::ALT ; "alt_long_j")]
     #[test_case("<Shift-Tab>", KeyCode::Tab, KeyModifiers::SHIFT ; "shift_long_tab")]

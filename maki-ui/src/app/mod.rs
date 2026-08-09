@@ -51,7 +51,7 @@ use crate::components::{
 use crate::image;
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
 use arc_swap::{ArcSwap, ArcSwapOption};
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use maki_agent::permissions::PermissionManager;
 use maki_agent::{
     AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
@@ -733,6 +733,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let key = normalize_key_event(key);
         self.clear_selection_unless_pending_copy();
 
         if key::SUSPEND.matches(key) && cfg!(unix) {
@@ -1668,6 +1669,14 @@ impl App {
         actions.extend(self.start_from_queue(&msg));
         actions
     }
+}
+
+fn normalize_key_event(mut key: KeyEvent) -> KeyEvent {
+    if key.code == KeyCode::BackTab {
+        key.code = KeyCode::Tab;
+        key.modifiers.insert(KeyModifiers::SHIFT);
+    }
+    key
 }
 
 fn is_streaming_stop_key(key: KeyEvent) -> bool {
