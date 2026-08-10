@@ -121,8 +121,6 @@ fn bash_restore_renders_real_view() {
     );
     assert!(r.header.contains("print hi"), "header: {}", r.header);
 }
-
-/// Phase 1: children render through their own real views (grep gutter,
 /// bash command header), not the raw-llm fallback. Phase 2: a replayed
 /// click inside grep's range reaches its real toggle and expands only it.
 #[test]
