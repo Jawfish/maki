@@ -18,6 +18,9 @@ pub(crate) const PARAM_PREVIEW_MAX: usize = 120;
 const PREVIEW_SUFFIX: &str = "...";
 const JSON_ENCODED_ARRAY_HINT: &str = "Pass a JSON array, not a JSON-encoded string.";
 const JSON_ENCODED_OBJECT_HINT: &str = "Pass a JSON object, not a JSON-encoded string.";
+const UNPARSABLE_JSON_HINT: &str = "Re-send it as a real JSON value, not a string. If the payload is large, split it across several calls rather than resending the same text.";
+const TRUNCATED_REASON: &str = "the text ends mid-value, so it was cut short in transit";
+const UNEXPECTED_KIND_REASON: &str = "the text parsed as JSON of a different type";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
@@ -324,6 +327,11 @@ pub enum ToolInputErrorKind {
         got: ParamKind,
         preview: Option<String>,
     },
+    UnparsableJsonString {
+        expected: ParamKind,
+        reason: String,
+        preview: String,
+    },
     NotInEnum {
         expected: &'static [&'static str],
         got: String,
@@ -371,6 +379,16 @@ impl Display for ToolInputError {
                     write!(f, " Preview: {p}")?;
                 }
                 Ok(())
+            }
+            ToolInputErrorKind::UnparsableJsonString {
+                expected,
+                reason,
+                preview,
+            } => {
+                write!(
+                    f,
+                    "expected {expected}, got a string that is not valid JSON: {reason}. {UNPARSABLE_JSON_HINT} Preview: {preview}"
+                )
             }
             ToolInputErrorKind::NotInEnum { expected, got } => {
                 f.write_str("expected one of [")?;
@@ -595,6 +613,18 @@ fn coerce_container(
         }
     }
     let got = ParamKind::of(&value);
+    if let Value::String(s) = &value
+        && looks_like_json_container(s)
+    {
+        return Err(ToolInputError::at(
+            path,
+            ToolInputErrorKind::UnparsableJsonString {
+                expected,
+                reason: json_parse_reason(s),
+                preview: preview(s),
+            },
+        ));
+    }
     let preview = if let Value::String(s) = &value {
         Some(preview(s))
     } else {
@@ -608,6 +638,22 @@ fn coerce_container(
             preview,
         },
     ))
+}
+
+fn looks_like_json_container(s: &str) -> bool {
+    matches!(s.trim_start().as_bytes().first(), Some(b'[' | b'{'))
+}
+
+/// A container arrived stringified and neither the strict parser nor the
+/// repairer could recover it. The caller cannot act on "pass an array" alone,
+/// so report why the text failed: a payload cut mid-value needs resending in
+/// smaller pieces, while a malformed one needs rewriting.
+fn json_parse_reason(s: &str) -> String {
+    match serde_json::from_str::<Value>(s) {
+        Ok(_) => UNEXPECTED_KIND_REASON.to_owned(),
+        Err(error) if error.is_eof() => format!("{TRUNCATED_REASON}: {error}"),
+        Err(error) => error.to_string(),
+    }
 }
 
 fn f64_as_i64(f: f64) -> Option<i64> {
@@ -638,10 +684,13 @@ fn coerce_str_to(s: &str, expected: ParamKind) -> Option<Value> {
         return None;
     }
 
-    if let Ok(parsed) = serde_json::from_str::<Value>(s)
-        && ParamKind::of(&parsed) == expected
-    {
-        return Some(parsed);
+    match serde_json::from_str::<Value>(s) {
+        Ok(parsed) if ParamKind::of(&parsed) == expected => return Some(parsed),
+        // A payload cut mid-value repairs into something that looks whole:
+        // the repairer closes the open string and container, so half an edit
+        // would apply as if it had arrived intact. Refuse it instead.
+        Err(error) if error.is_eof() => return None,
+        _ => {}
     }
 
     let repaired = repair_loads(s, &RepairOpts::default()).ok()?;
@@ -821,6 +870,7 @@ mod tests {
     const MSG_EXPECTED_ARRAY: &str = "expected array";
     const MSG_JSON_ENCODED_HINT: &str = "Pass a JSON array";
     const MSG_EXPECTED_ONE_OF: &str = "expected one of";
+    const MSG_SPLIT_HINT: &str = "split it across several calls";
 
     const STR_PRIM: ParamSchema = ParamSchema::Primitive {
         kind: ParamKind::String,
@@ -908,6 +958,40 @@ mod tests {
         assert_eq!(err.path.to_string(), "edits[0].new_string");
         let rendered = err.to_string();
         assert!(rendered.contains(MSG_MISSING), "render: {rendered}");
+    }
+
+    #[test_case("[{\"old_string\": \"a\nb\", \"new_string\": \"c\"}]"; "raw control characters")]
+    #[test_case(r#"[{"old_string": "PUT 1.=1:\n+changed", "new_string": "a\"b\\c"}]"#; "escaped newlines quotes and backslashes")]
+    #[test_case("[{\"old_string\": \"C:\\path\nnext\", \"new_string\": \"x\"}]"; "lone backslash")]
+    fn stringified_array_survives_hostile_escaping(edits: &str) {
+        let result = validate(&MULTIEDIT_LIKE, json!({"path": "/x", "edits": edits}));
+        assert!(result.is_ok(), "got: {:?}", result.map(|_| ()));
+    }
+
+    #[test]
+    fn truncated_stringified_array_is_reported_as_cut_short_not_as_wrong_type() {
+        let truncated = r#"[{"old_string": "a", "new_string": "unterminated"#;
+        let err = validate(&MULTIEDIT_LIKE, json!({"path": "/x", "edits": truncated})).unwrap_err();
+
+        assert!(
+            matches!(err.kind, ToolInputErrorKind::UnparsableJsonString { .. }),
+            "kind: {:?}",
+            err.kind
+        );
+        let rendered = err.to_string();
+        assert!(rendered.contains(TRUNCATED_REASON), "render: {rendered}");
+        assert!(rendered.contains(MSG_SPLIT_HINT), "render: {rendered}");
+        assert!(
+            !rendered.contains(MSG_JSON_ENCODED_HINT),
+            "a truncated payload must not be blamed on JSON encoding: {rendered}"
+        );
+    }
+
+    #[test]
+    fn malformed_but_complete_stringified_array_is_still_repaired() {
+        let malformed = r#"[{"old_string": "a", "new_string": b}]"#;
+        let out = validate(&MULTIEDIT_LIKE, json!({"path": "/x", "edits": malformed})).unwrap();
+        assert_eq!(out["edits"][0]["new_string"], "b");
     }
 
     #[test]
