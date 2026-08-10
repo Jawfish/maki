@@ -253,6 +253,19 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 static CURRENT_NAME: Mutex<Option<String>> = Mutex::new(None);
 
+/// The theme and the syntax palette it installs are process-global. Tests
+/// that swap them, and tests that compare colors against the installed
+/// palette, hold this so they never overlap.
+#[cfg(test)]
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn current() -> Guard<Arc<Theme>> {
     THEME.load()
 }
@@ -1092,6 +1105,7 @@ mode_build = "#112233"
 
     #[test]
     fn style_by_name_resolves() {
+        let _guard = test_guard();
         set(dracula());
         let t = current();
         assert_eq!(style_by_name("dim"), t.tool_dim);
@@ -1144,6 +1158,7 @@ mode_build = "#112233"
 
     #[test]
     fn set_advances_generation() {
+        let _guard = test_guard();
         let before = generation();
         set(dracula());
         assert!(generation() > before);
@@ -1151,6 +1166,7 @@ mode_build = "#112233"
 
     #[test]
     fn set_installs_theme_before_generation_observed() {
+        let _guard = test_guard();
         let theme = tokyonight();
         let expected_syntax_bg = theme.syntax.settings.background;
         let before = generation();
@@ -1169,6 +1185,7 @@ mode_build = "#112233"
 
     #[test]
     fn set_generation_is_monotonic_across_switches() {
+        let _guard = test_guard();
         let g0 = generation();
         set(dracula());
         let g1 = generation();
