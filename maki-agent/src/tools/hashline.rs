@@ -31,6 +31,7 @@ const TRUNCATED_PAYLOAD_GUIDANCE: &str = "if that is fewer operations than you s
 const NON_UTF8_ERROR: &str = "non-utf8 content; re-read cannot proceed";
 const STALE_DELETE_ERROR: &str = "stale tag: the file changed since that revision, so the delete was refused; re-read the file and retry with its fresh tag";
 const REMOVE_OPS: usize = 1;
+const DUPLICATE_PATH_GUIDANCE: &str = "combine the sections by concatenating their original `PUT`/`CUT` operations without prefixing headers with `+`";
 
 pub type ContentTag = String;
 
@@ -330,7 +331,7 @@ impl HashlineState {
             .find_map(|paths| (paths[0] == paths[1]).then(|| paths[0].as_path()))
         {
             return Err(format!(
-                "duplicate canonical path {}; combine the sections by concatenating their original `PUT`/`CUT` operations without prefixing headers with `+`",
+                "duplicate canonical path {}; {DUPLICATE_PATH_GUIDANCE}",
                 duplicate.display()
             ));
         }
@@ -1996,7 +1997,7 @@ mod tests {
             ];
             let error = state.edit_sections(&duplicate).await.unwrap_err();
             assert!(error.contains("duplicate canonical path"), "got: {error}");
-            assert!(error.contains("merge"), "got: {error}");
+            assert!(error.contains(DUPLICATE_PATH_GUIDANCE), "got: {error}");
 
             let malformed = [
                 EditSection::patch(&first, &first_tag, "PUT 1.=1:\n+first"),
