@@ -4,6 +4,7 @@
 
 use crate::components::layout::{MESSAGE_INDENT, right_align};
 use crate::components::marker::State;
+use crate::components::side_effects::is_irreversible;
 use crate::components::timing::format_duration;
 use crate::theme;
 use maki_agent::diff::{DiffLine, compute_hunks};
@@ -54,6 +55,8 @@ pub struct TurnTelemetry {
     /// Start order matters: the newest still-running tool is the phase the
     /// task line reports.
     running: Vec<(String, String)>,
+    /// Set by tools whose effects a workspace checkpoint cannot revert.
+    irreversible: bool,
     tool_count: usize,
     cost: Option<f64>,
     started_at: Option<Instant>,
@@ -73,7 +76,12 @@ impl TurnTelemetry {
         if event.tool.as_ref() == TASK_TOOL_NAME {
             self.subagents.push(label.clone());
         }
+        self.irreversible |= is_irreversible(&event.tool, &event.summary);
         self.running.push((event.id.clone(), label));
+    }
+
+    pub(crate) fn has_irreversible_effects(&self) -> bool {
+        self.irreversible
     }
 
     pub(crate) fn record_done(&mut self, event: &ToolDoneEvent) {

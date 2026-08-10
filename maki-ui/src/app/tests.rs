@@ -4,6 +4,8 @@ use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{Bind, KeybindContext, key as kb};
 use crate::components::marker::State;
+use crate::app::workspace_checkpoints::NO_SNAPSHOT_ERR;
+use crate::components::rewind_picker::RewindMode;
 use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
@@ -2310,8 +2312,9 @@ fn rewind_to_middle_truncates_and_populates_input() {
         turn_index: 2,
         prompt_preview: "2: second".into(),
         prompt_text: "second prompt".into(),
+        irreversible_mark: None,
     };
-    let actions = app.rewind_to(entry);
+    let actions = app.rewind_to(entry, RewindMode::SessionOnly);
 
     assert_eq!(app.state.session.messages().len(), 2);
     assert!(app.state.session.tool_outputs().contains_key("tool-1"));
@@ -2337,8 +2340,9 @@ fn rewind_to_first_turn_clears_everything() {
         turn_index: 0,
         prompt_preview: "1: first".into(),
         prompt_text: "first prompt".into(),
+        irreversible_mark: None,
     };
-    let actions = app.rewind_to(entry);
+    let actions = app.rewind_to(entry, RewindMode::SessionOnly);
 
     assert!(app.state.session.messages().is_empty());
     assert!(!app.state.session.tool_outputs().contains_key("tool-1"));
@@ -2347,6 +2351,38 @@ fn rewind_to_first_turn_clears_everything() {
     assert_eq!(app.state.context_size, 0);
     assert_eq!(app.chats[0].context_size, 0);
     assert!(matches!(&actions[0], Action::LoadSession(_)));
+}
+
+/// The file mode has to reach the checkpoint store; with no snapshot on
+/// record it says so instead of pretending the files came back.
+#[test]
+fn rewind_with_files_reports_a_missing_snapshot() {
+    let mut app = build_rewind_app();
+    let entry = crate::components::rewind_picker::RewindEntry {
+        turn_index: 2,
+        prompt_preview: "2: second".into(),
+        prompt_text: "second prompt".into(),
+        irreversible_mark: None,
+    };
+    app.rewind_to(entry, RewindMode::SessionAndFiles);
+
+    assert_eq!(app.status_bar.flash_text(), Some(NO_SNAPSHOT_ERR));
+    assert_eq!(app.state.session.messages().len(), 2);
+}
+
+#[test]
+fn irreversible_turn_is_marked_in_the_rewind_picker() {
+    let mut app = build_rewind_app();
+    app.workspace_checkpoints.snapshot_before_turn(2);
+    app.workspace_checkpoints.mark_irreversible();
+    app.open_rewind_picker();
+
+    let marked = app.rewind_picker.marks();
+    assert_eq!(
+        marked,
+        vec![true, true, false],
+        "the irreversible turn and everything after it carry the mark"
+    );
 }
 
 #[test_case(Duration::ZERO,          true  ; "keeps_fresh_error")]
@@ -4005,8 +4041,9 @@ fn checkpoint_after_rewind_persists_the_truncated_history() {
         turn_index: 1,
         prompt_preview: "2: second".into(),
         prompt_text: "second prompt".into(),
+        irreversible_mark: None,
     };
-    app.rewind_to(entry);
+    app.rewind_to(entry, RewindMode::SessionOnly);
     assert!(app.shared_history.is_none(), "mirror handle is dropped");
     app.checkpoint();
 

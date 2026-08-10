@@ -24,6 +24,9 @@ the state (tool headers, queue rows). Use `State::label` or
 `State::label_spans` where the state is the whole message (run finished,
 status bar, retries).
 
+A turn whose side effects no file snapshot can undo is marked `▲ irreversible`
+(`marker::irreversible_label`): the attention glyph, its own word.
+
 Lua plugins cannot call the module, so they mirror it through theme style
 names (`plugins/batch/init.lua`). Keep them in sync when the table changes.
 

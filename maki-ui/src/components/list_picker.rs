@@ -422,6 +422,14 @@ impl<T: PickerItem> ListPicker<T> {
         s.selected_item_index().map(|i| &s.items[i])
     }
 
+    /// Takes the highlighted item and closes, the way Enter does, for pickers
+    /// that offer a second selection key.
+    pub fn take_selected(&mut self) -> Option<T> {
+        let idx = self.state.as_ref()?.selected_item_index()?;
+        let mut state = self.state.take()?;
+        Some(state.items.swap_remove(idx))
+    }
+
     pub fn selected_index(&self) -> Option<usize> {
         self.state.as_ref().and_then(|s| s.selected_item_index())
     }

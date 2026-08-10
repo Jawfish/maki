@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::chat::{Chat, DONE_TEXT, history_to_display};
 use crate::components::DisplayRole;
-use crate::components::rewind_picker::RewindEntry;
+use crate::components::rewind_picker::{RewindEntry, RewindMode};
 use crate::components::{Action, LoadedSession};
 use maki_providers::{Model, TokenUsage};
 use maki_storage::id::MakiId;
@@ -307,7 +307,11 @@ impl App {
     }
 
     pub(super) fn open_rewind_picker(&mut self) -> Vec<Action> {
-        match self.rewind_picker.open(self.state.session.messages()) {
+        let irreversible_from = self.workspace_checkpoints.irreversible_from();
+        match self
+            .rewind_picker
+            .open(self.state.session.messages(), irreversible_from)
+        {
             Ok(()) => vec![],
             Err(msg) => {
                 self.status_bar.flash(msg);
@@ -316,7 +320,12 @@ impl App {
         }
     }
 
-    pub(super) fn rewind_to(&mut self, entry: RewindEntry) -> Vec<Action> {
+    pub(super) fn rewind_to(&mut self, entry: RewindEntry, mode: RewindMode) -> Vec<Action> {
+        let restore_error = (mode == RewindMode::SessionAndFiles)
+            .then(|| self.workspace_checkpoints.restore_turn(entry.turn_index).err())
+            .flatten();
+        self.workspace_checkpoints.forget_from(entry.turn_index);
+
         let session = self.state.session_mut();
         session.truncate_messages(entry.turn_index);
         session.prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
@@ -329,6 +338,10 @@ impl App {
 
         self.input_box.set_input(entry.prompt_text);
         self.input_box.buffer.move_to_end();
+        // After the chrome reset, or the reset would wipe the message.
+        if let Some(msg) = restore_error {
+            self.status_bar.flash(msg);
+        }
 
         vec![Action::LoadSession(Box::new(self.install_local_history()))]
     }

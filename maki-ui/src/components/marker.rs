@@ -100,6 +100,17 @@ impl State {
     }
 }
 
+/// Turns whose side effects a workspace checkpoint cannot undo. They borrow
+/// the attention glyph and style, with their own word.
+pub(crate) const IRREVERSIBLE_WORD: &str = "irreversible";
+
+pub(crate) fn irreversible_label() -> String {
+    format!(
+        "{}{GLYPH_GAP}{IRREVERSIBLE_WORD}",
+        State::NeedsAttention.glyph()
+    )
+}
+
 /// The running marker used by history tool headers. Only one thing on screen
 /// animates: when the task line is up it owns the motion and the headers show
 /// the static running glyph instead.

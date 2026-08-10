@@ -178,6 +178,9 @@ pub mod key {
         modifiers: KeyModifiers::NONE,
         label: "?",
     };
+    /// Shares Ctrl+F with `SEARCH`: only the rewind picker looks at it, and
+    /// search is not reachable while that picker is open.
+    pub const REWIND_FILES: Bind = ctrl_bind!('f');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -572,6 +575,18 @@ pub const KEYBINDS: &[Keybind] = &[
         label: KeyLabel::Alt(key::SCROLL_HALF_UP.label, key::SCROLL_HALF_DOWN.label),
         description: "Scroll page up / down",
         context: KeybindContext::Picker,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single("Enter"),
+        description: "Rewind session only",
+        context: KeybindContext::RewindPicker,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::REWIND_FILES.label),
+        description: "Rewind session and restore files",
+        context: KeybindContext::RewindPicker,
         platform: Platform::All,
     },
     Keybind {

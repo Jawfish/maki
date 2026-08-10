@@ -239,6 +239,10 @@ impl App {
     /// once per run.
     pub(super) fn start_run(&mut self, input: AgentInput, display: String) -> Vec<Action> {
         self.run_id += 1;
+        // Keyed by the index the user message of this turn will take, which
+        // is where the rewind picker points back to.
+        self.workspace_checkpoints
+            .snapshot_before_turn(self.state.session.messages().len());
         // New work supersedes text held for recovery after an agent error.
         self.recoverable_queue.clear();
         self.turn_telemetry = TurnTelemetry::started();

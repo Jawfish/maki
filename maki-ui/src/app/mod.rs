@@ -15,6 +15,7 @@ pub(crate) mod shell;
 #[cfg(test)]
 pub(crate) mod tests;
 pub(crate) mod view;
+mod workspace_checkpoints;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,6 +55,7 @@ use crate::components::{
 };
 use crate::image;
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
+use crate::app::workspace_checkpoints::WorkspaceCheckpoints;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use maki_agent::permissions::PermissionManager;
@@ -202,6 +204,7 @@ pub struct App {
     pub(super) hint_reader: HintReader,
     pub(crate) restore_event_tx: Option<maki_agent::EventSender>,
     pub(super) restoring: Arc<AtomicBool>,
+    pub(crate) workspace_checkpoints: WorkspaceCheckpoints,
     subagent_answers: HashMap<String, flume::Sender<String>>,
 }
 
@@ -229,6 +232,8 @@ impl App {
         let state = SessionState::from_session(session, model, &storage);
         let typewriter = ui_config.typewriter_ms_per_char;
         let flash = ui_config.flash_duration();
+        let workspace_checkpoints =
+            WorkspaceCheckpoints::new(storage.clone(), PathBuf::from(&state.session.cwd));
         let input_box = InputBox::new(
             InputHistory::load(&storage, input_history_size),
             ui_config.max_input_lines,
@@ -301,6 +306,7 @@ impl App {
             hint_reader,
             restore_event_tx: None,
             restoring: Arc::new(AtomicBool::new(false)),
+            workspace_checkpoints,
             subagent_answers: HashMap::new(),
         };
         app.model_picker
@@ -724,7 +730,7 @@ impl App {
         if self.rewind_picker.is_open() {
             return Some(match self.rewind_picker.handle_key(key) {
                 RewindPickerAction::Consumed => vec![],
-                RewindPickerAction::Select(entry) => self.rewind_to(entry),
+                RewindPickerAction::Select(entry, mode) => self.rewind_to(entry, mode),
                 RewindPickerAction::Close => vec![],
             });
         }
@@ -1683,6 +1689,9 @@ impl App {
     fn push_closure_block(&mut self) {
         let mut telemetry = std::mem::take(&mut self.turn_telemetry);
         telemetry.finish();
+        if telemetry.has_irreversible_effects() {
+            self.workspace_checkpoints.mark_irreversible();
+        }
         if !telemetry.qualifies() {
             return;
         }
