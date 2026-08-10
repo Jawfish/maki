@@ -327,6 +327,19 @@ impl Model {
         }
     }
 
+    /// True when the provider's API takes a raw token budget instead of an
+    /// effort level, so a numeric thinking setting reaches the model as typed.
+    pub fn takes_thinking_budget(&self) -> bool {
+        let Some(manifest) = ManifestRegistry::for_slug(&self.provider) else {
+            return false;
+        };
+        match manifest.slug {
+            "anthropic" => !crate::types::ThinkingConfig::requires_adaptive(&self.id),
+            "google" | "ollama" | "llama-cpp" => true,
+            _ => false,
+        }
+    }
+
     pub fn supports_vision(&self) -> bool {
         if let Some(vision) = self.supports_vision_override {
             return vision;

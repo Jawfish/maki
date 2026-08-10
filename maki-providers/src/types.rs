@@ -17,7 +17,7 @@ use strum::{Display, IntoStaticStr};
 use tracing::warn;
 
 use crate::TokenUsage;
-use crate::model::Model;
+use crate::model::{Model, format_tokens};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMediaType {
@@ -631,13 +631,30 @@ impl ThinkingConfig {
         }
     }
 
-    pub fn status_label(self) -> Option<Cow<'static, str>> {
-        match self {
-            Self::Off => None,
-            Self::Adaptive => Some(Cow::Borrowed("thinking")),
-            Self::Effort(e) => Some(Cow::Owned(format!("thinking: {e}"))),
-            Self::Budget(n) => Some(Cow::Owned(format!("thinking: {n}"))),
+    /// Status-bar label for the level the active model really uses: efforts
+    /// snap to the levels its API accepts, and a token budget shows as an
+    /// effort on APIs that only speak effort levels.
+    pub fn level_label(self, model: &Model) -> Option<Cow<'static, str>> {
+        if !model.supports_thinking() {
+            return None;
         }
+        let level = match self {
+            Self::Off => return None,
+            Self::Adaptive => return Some(Cow::Borrowed("adaptive")),
+            Self::Effort(e) => e,
+            Self::Budget(n) if model.takes_thinking_budget() => {
+                return Some(Cow::Owned(format_tokens(n)));
+            }
+            Self::Budget(n) => Effort::from_budget(
+                n,
+                model
+                    .max_thinking_budget()
+                    .unwrap_or(FALLBACK_MAX_THINKING_BUDGET),
+            ),
+        };
+        Some(Cow::Borrowed(
+            level.snap(&model.thinking_efforts()).as_str(),
+        ))
     }
 }
 
@@ -930,6 +947,26 @@ mod tests {
         let mut body = json!({});
         config.apply_to_body(&mut body, &thinking_model(model_id));
         assert_eq!(body, expected);
+    }
+
+    #[test_case(ThinkingConfig::Off,             "claude-opus-5",   None            ; "label_off_hidden")]
+    #[test_case(ThinkingConfig::Adaptive,        "claude-opus-5",   Some("adaptive") ; "label_adaptive")]
+    #[test_case(ThinkingConfig::Effort(Minimal), "claude-opus-5",   Some("low")     ; "label_effort_snaps_up_to_lowest")]
+    #[test_case(ThinkingConfig::Effort(Max),     "claude-opus-5",   Some("high")    ; "label_effort_snaps_down")]
+    #[test_case(ThinkingConfig::Budget(10000),   "claude-opus-5",   Some("high")    ; "label_budget_as_effort_on_adaptive_model")]
+    #[test_case(ThinkingConfig::Effort(XHigh),   "claude-opus-4-5", Some("xhigh")   ; "label_effort_legacy_passthrough")]
+    #[test_case(ThinkingConfig::Budget(2048),    "claude-opus-4-5", Some("2.0k")    ; "label_budget_as_tokens_on_legacy_model")]
+    fn thinking_level_label(config: ThinkingConfig, model_id: &str, expected: Option<&str>) {
+        let mut model = thinking_model(model_id);
+        model.supports_thinking_override = Some(true);
+        assert_eq!(config.level_label(&model).as_deref(), expected);
+    }
+
+    #[test]
+    fn thinking_level_label_hidden_without_model_support() {
+        let mut model = thinking_model("claude-opus-5");
+        model.supports_thinking_override = Some(false);
+        assert!(ThinkingConfig::Adaptive.level_label(&model).is_none());
     }
 
     #[test_case(&dialect::STANDARD, ThinkingConfig::Off,             None            ; "standard_off_noop")]
