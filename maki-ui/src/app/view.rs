@@ -46,7 +46,12 @@ impl App {
         self.render_bottom_panel(frame, &layout);
         self.render_splits(frame, &layout);
         let mut overlay_rect = self.render_picker_overlays(frame, &layout);
-        self.render_status_bar(frame, layout.status_area, render_chat);
+        self.render_status_bar(
+            frame,
+            layout.status_area,
+            render_chat,
+            task_line.is_some(),
+        );
         overlay_rect = self.render_top_modals(frame, overlay_rect);
         self.register_zones(&layout, overlay_rect);
         self.apply_selection(frame, render_chat);
@@ -341,7 +346,13 @@ impl App {
         overlay_rect
     }
 
-    fn render_status_bar(&mut self, frame: &mut Frame, status_area: Rect, render_chat: usize) {
+    fn render_status_bar(
+        &mut self,
+        frame: &mut Frame,
+        status_area: Rect,
+        render_chat: usize,
+        task_line_visible: bool,
+    ) {
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let (mode_label, mode_style) = self.mode_label();
@@ -369,6 +380,7 @@ impl App {
             fast: self.state.fast,
             restoring: self.restoring.load(Ordering::Relaxed),
             subscription_usage: &subscription_usage,
+            task_line_visible,
         };
         self.status_bar.view(frame, status_area, &ctx);
     }
