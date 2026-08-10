@@ -290,6 +290,15 @@ impl Anthropic {
             resolved_base_url: None,
         }
     }
+    pub(crate) fn with_oauth_tokens(
+        tokens: &maki_storage::auth::OAuthTokens,
+        timeouts: super::Timeouts,
+    ) -> Self {
+        Self::with_auth(
+            Arc::new(Mutex::new(super::ResolvedAuth::bearer(&tokens.access))),
+            timeouts,
+        )
+    }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
         self.system_prefix = prefix;

@@ -1,14 +1,19 @@
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
+use isahc::{AsyncReadResponseExt, Request};
 use maki_storage::StateDir;
 use maki_storage::id::SessionRef;
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{
+    AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse, UsageLimit,
+    dialect,
+};
 
 use super::auth;
 use crate::providers::ResolvedAuth;
@@ -22,6 +27,9 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     include_stream_usage: true,
     provider_name: "OpenAI",
 };
+const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const LABEL_SESSION: &str = "Current session";
+const LABEL_WEEK: &str = "Current week";
 
 // Non-codex models OpenAI offers for subscription usage via the Coding Plan.
 // Codex models are matched by their `-codex` substring in
@@ -58,6 +66,64 @@ fn coding_plan_context_window(model_id: &str) -> Option<u32> {
     } else {
         CODEX_PLAN_CONTEXT_WINDOW
     })
+}
+#[derive(Deserialize)]
+struct UsageResponse {
+    rate_limit: Option<RateLimit>,
+}
+
+#[derive(Deserialize)]
+struct RateLimit {
+    primary_window: Option<UsageWindow>,
+    secondary_window: Option<UsageWindow>,
+}
+
+#[derive(Deserialize)]
+struct UsageWindow {
+    used_percent: Option<f64>,
+    reset_at: Option<u64>,
+    reset_after_seconds: Option<u64>,
+    limit_window_seconds: Option<u64>,
+}
+
+impl UsageResponse {
+    fn into_usage(self, now: u64) -> ProviderUsage {
+        let Some(rate_limit) = self.rate_limit else {
+            return ProviderUsage::default();
+        };
+        let limits = [rate_limit.primary_window, rate_limit.secondary_window]
+            .into_iter()
+            .flatten()
+            .map(|window| {
+                let label = if window
+                    .limit_window_seconds
+                    .is_some_and(|seconds| seconds <= 6 * 60 * 60)
+                {
+                    LABEL_SESSION
+                } else {
+                    LABEL_WEEK
+                };
+                UsageLimit {
+                    label: label.into(),
+                    percentage: window
+                        .used_percent
+                        .filter(|percent| percent.is_finite())
+                        .map(|percent| percent.round().clamp(0.0, 100.0) as u32),
+                    reset_at: window
+                        .reset_at
+                        .and_then(|seconds| seconds.checked_mul(1_000))
+                        .or_else(|| {
+                            window
+                                .reset_after_seconds
+                                .and_then(|seconds| seconds.checked_mul(1_000))
+                                .and_then(|duration| now.checked_add(duration))
+                        }),
+                    detail: None,
+                }
+            })
+            .collect();
+        ProviderUsage { plan: None, limits }
+    }
 }
 
 pub struct OpenAi {
@@ -96,6 +162,19 @@ impl OpenAi {
             storage: None,
             system_prefix: None,
         }
+    }
+    pub(crate) fn with_oauth_storage(
+        storage: StateDir,
+        timeouts: crate::providers::Timeouts,
+    ) -> Result<Self, AgentError> {
+        let resolved = auth::resolve(&storage)?;
+        Ok(Self {
+            resolved_base_url: resolve_openai_base_url(),
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+            auth: Arc::new(Mutex::new(resolved)),
+            storage: Some(storage),
+            system_prefix: None,
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -270,6 +349,25 @@ impl Provider for OpenAi {
         })
     }
 
+    fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
+        Box::pin(async {
+            if !self.is_oauth() {
+                return Ok(None);
+            }
+            self.with_oauth_retry(|| async {
+                let auth = self.codex_auth()?;
+                let request = auth.configure_request(Request::get(USAGE_URL)).body(())?;
+                let mut response = self.compat.client().send_async(request).await?;
+                if response.status().as_u16() != 200 {
+                    return Err(AgentError::from_response(response).await);
+                }
+                let parsed: UsageResponse = serde_json::from_str(&response.text().await?)?;
+                Ok(Some(parsed.into_usage(maki_storage::auth::now_millis())))
+            })
+            .await
+        })
+    }
+
     fn adjust_model(&self, model: &mut Model) {
         if self.is_oauth()
             && let Some(context_window) = coding_plan_context_window(&model.id)
@@ -284,6 +382,34 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+
+    const USAGE_BODY: &str = r#"{
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {"used_percent": 164.6, "reset_at": 1770415200, "limit_window_seconds": 604800},
+            "secondary_window": {"used_percent": 12.2, "reset_after_seconds": 3600, "limit_window_seconds": 18000}
+        }
+    }"#;
+    const NOW: u64 = 1_770_000_000_000;
+
+    #[test]
+    fn parse_subscription_usage_windows() {
+        let parsed: UsageResponse = serde_json::from_str(USAGE_BODY).unwrap();
+        let usage = parsed.into_usage(NOW);
+        assert_eq!(usage.limits.len(), 2);
+        assert_eq!(usage.limits[0].label, LABEL_WEEK);
+        assert_eq!(usage.limits[0].percentage, Some(100));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
+        assert_eq!(usage.limits[1].label, LABEL_SESSION);
+        assert_eq!(usage.limits[1].percentage, Some(12));
+        assert_eq!(usage.limits[1].reset_at, Some(NOW + 3_600_000));
+    }
+
+    #[test]
+    fn parse_subscription_usage_without_rate_limit() {
+        let parsed: UsageResponse = serde_json::from_str(r#"{"plan_type":"free"}"#).unwrap();
+        assert!(parsed.into_usage(NOW).limits.is_empty());
+    }
 
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]

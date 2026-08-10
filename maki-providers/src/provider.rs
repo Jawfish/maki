@@ -31,6 +31,81 @@ use crate::providers::tensorx::TensorX;
 use crate::providers::zai::Zai;
 use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
 
+const CLAUDE_SUBSCRIPTION: &str = "claude-subscription";
+const SUBSCRIPTION_PROXY_STATE: &str = "llm-subscription-proxy";
+pub async fn fetch_subscription_usage(
+    kind: ProviderKind,
+    timeouts: Timeouts,
+) -> Result<Option<ProviderUsage>, AgentError> {
+    let maki_state = maki_storage::StateDir::resolve()?;
+    fetch_subscription_usage_from(kind, timeouts, &maki_state).await
+}
+
+async fn fetch_subscription_usage_from(
+    kind: ProviderKind,
+    timeouts: Timeouts,
+    maki_state: &maki_storage::StateDir,
+) -> Result<Option<ProviderUsage>, AgentError> {
+    let provider_name = match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAi => "openai",
+        _ => return Ok(None),
+    };
+    let mut state = oauth_state_dirs(maki_state)
+        .into_iter()
+        .find(|dir| maki_storage::auth::load_tokens(dir, provider_name).is_some())
+        .ok_or_else(|| AgentError::Config {
+            message: format!("{kind} subscription OAuth tokens not found"),
+        })?;
+    let expired = maki_storage::auth::load_tokens(&state, provider_name)
+        .is_some_and(|tokens| tokens.is_expired());
+    if expired
+        && kind == ProviderKind::Anthropic
+        && let Ok(provider) = dynamic::create(CLAUDE_SUBSCRIPTION, timeouts)
+    {
+        provider.refresh_auth().await?;
+        state = oauth_state_dirs(maki_state)
+            .into_iter()
+            .find(|dir| {
+                maki_storage::auth::load_tokens(dir, provider_name)
+                    .is_some_and(|tokens| !tokens.is_expired())
+            })
+            .ok_or_else(|| AgentError::Config {
+                message: "Anthropic subscription OAuth refresh did not produce a valid token"
+                    .into(),
+            })?;
+    }
+    match kind {
+        ProviderKind::Anthropic => {
+            let tokens =
+                maki_storage::auth::load_tokens(&state, provider_name).ok_or_else(|| {
+                    AgentError::Config {
+                        message: "Anthropic subscription OAuth tokens disappeared".into(),
+                    }
+                })?;
+            Anthropic::with_oauth_tokens(&tokens, timeouts)
+                .fetch_usage()
+                .await
+        }
+        ProviderKind::OpenAi => {
+            OpenAi::with_oauth_storage(state, timeouts)?
+                .fetch_usage()
+                .await
+        }
+        _ => Ok(None),
+    }
+}
+
+fn oauth_state_dirs(maki_state: &maki_storage::StateDir) -> Vec<maki_storage::StateDir> {
+    let mut dirs = vec![maki_state.clone()];
+    if let Some(parent) = maki_state.path().parent() {
+        dirs.push(maki_storage::StateDir::from_path(
+            parent.join(SUBSCRIPTION_PROXY_STATE),
+        ));
+    }
+    dirs
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ProviderKind {
@@ -579,5 +654,35 @@ mod tests {
             }
             Ok(_) => panic!("expected error for unknown provider"),
         }
+    }
+
+    #[test]
+    fn oauth_state_dirs_prefer_maki_then_subscription_proxy() {
+        let state = maki_storage::StateDir::from_path("/state/maki".into());
+        let dirs = oauth_state_dirs(&state);
+        assert_eq!(dirs[0].path(), std::path::Path::new("/state/maki"));
+        assert_eq!(
+            dirs[1].path(),
+            std::path::Path::new("/state/llm-subscription-proxy")
+        );
+    }
+
+    #[test]
+    fn oauth_state_dirs_find_proxy_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let maki = maki_storage::StateDir::from_path(tmp.path().join("maki"));
+        let proxy = maki_storage::StateDir::from_path(tmp.path().join(SUBSCRIPTION_PROXY_STATE));
+        let tokens = maki_storage::auth::OAuthTokens {
+            access: "access".into(),
+            refresh: "refresh".into(),
+            expires: u64::MAX,
+            account_id: Some("account".into()),
+        };
+        maki_storage::auth::save_tokens(&proxy, "openai", &tokens).unwrap();
+        let found = oauth_state_dirs(&maki)
+            .into_iter()
+            .find(|dir| maki_storage::auth::load_tokens(dir, "openai").is_some())
+            .unwrap();
+        assert_eq!(found.path(), proxy.path());
     }
 }
