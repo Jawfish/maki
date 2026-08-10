@@ -67,6 +67,16 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Enter` | Select option |
 | `Esc` | Close |
 
+## Permission Prompt
+
+| Key | Action |
+|-----|--------|
+| `y` / `n` | Allow once / deny once |
+| `s` | Allow for this session |
+| `a` / `A` | Always allow this pattern here / everywhere |
+| `d` / `D` | Always deny this pattern here / everywhere |
+| `?` | Show / hide request detail |
+
 ## Pickers
 
 | Key | Action |

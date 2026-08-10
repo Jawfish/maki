@@ -19,13 +19,13 @@ pub(crate) mod permission_prompt;
 pub(crate) mod plan_form;
 pub(crate) mod progress_bar;
 pub mod queue_panel;
+pub(crate) mod return_summary;
 pub(crate) mod review_picker;
 pub(crate) mod rewind_picker;
 pub(crate) mod scrollbar;
 pub(crate) mod search_modal;
 pub(crate) mod split_layout;
 pub mod status_bar;
-pub(crate) mod return_summary;
 pub(crate) mod streaming_content;
 pub(crate) mod subscription_usage;
 pub(crate) mod task_line;
@@ -44,8 +44,8 @@ use maki_agent::review::ReviewTarget;
 use maki_agent::{BufferSnapshot, ToolInput, ToolOutput};
 use maki_providers::{Message, ModelTier};
 use ratatui::text::{Line, Span};
-use timing::ToolTiming;
 use return_summary::SummaryBlock;
+use timing::ToolTiming;
 
 pub(crate) const CHEVRON: &str = "❯ ";
 

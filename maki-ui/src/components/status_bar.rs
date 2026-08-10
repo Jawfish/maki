@@ -310,10 +310,7 @@ impl StatusBar {
         if let Status::Error { message, .. } = ctx.status {
             let mut spans = vec![Span::raw(" ")];
             spans.extend(State::Failed.label_spans(0));
-            spans.push(Span::styled(
-                format!(" {message}"),
-                theme::current().error,
-            ));
+            spans.push(Span::styled(format!(" {message}"), theme::current().error));
             push(Segment::Error, spans);
         }
 

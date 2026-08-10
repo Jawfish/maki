@@ -19,6 +19,7 @@ const MAIN_CONTEXTS: &[KeybindContext] = &[
     KeybindContext::Editing,
     KeybindContext::Streaming,
     KeybindContext::FormInput,
+    KeybindContext::Permission,
     KeybindContext::Picker,
 ];
 

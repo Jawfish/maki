@@ -127,7 +127,6 @@ impl TaskLine {
     }
 }
 
-
 fn span_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
 }
@@ -207,7 +206,10 @@ mod tests {
         .expect("visible during a run");
         let rendered = text(&line, WIDE);
         assert!(rendered.contains(NEEDS_APPROVAL), "{rendered}");
-        assert!(rendered.contains(State::NeedsAttention.glyph()), "{rendered}");
+        assert!(
+            rendered.contains(State::NeedsAttention.glyph()),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -245,7 +247,10 @@ mod tests {
         assert!(!rendered.contains(GOAL), "goal must not survive whole");
         assert!(rendered.contains(TOOL), "{rendered}");
         assert!(rendered.contains(&format_duration(ELAPSED)), "{rendered}");
-        assert!(rendered.chars().count() <= usize::from(NARROW), "{rendered}");
+        assert!(
+            rendered.chars().count() <= usize::from(NARROW),
+            "{rendered}"
+        );
     }
 
     #[test]

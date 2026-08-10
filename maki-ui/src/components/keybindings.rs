@@ -171,6 +171,13 @@ pub mod key {
     /// Shares Ctrl+Y with `SCROLL_LINE_UP`: modals and pickers intercept it
     /// first, so line scroll wins while they are open.
     pub const TOGGLE_THINKING: Bind = ctrl_bind!('y');
+    /// Folds the risk detail of a permission request in and out. Matched on
+    /// the key alone, since terminals disagree on Shift for punctuation.
+    pub const PERMISSION_DETAIL: Bind = Bind {
+        code: KeyCode::Char('?'),
+        modifiers: KeyModifiers::NONE,
+        label: "?",
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -188,6 +195,7 @@ pub enum KeybindContext {
     CommandPalette,
     Search,
     FilePicker,
+    Permission,
 }
 
 impl KeybindContext {
@@ -206,6 +214,7 @@ impl KeybindContext {
             Self::CommandPalette => "Commands",
             Self::Search => "Search",
             Self::FilePicker => "File Picker",
+            Self::Permission => "Permission Prompt",
         }
     }
 
@@ -581,6 +590,36 @@ pub const KEYBINDS: &[Keybind] = &[
         label: KeyLabel::Single("!/@/#/$"),
         description: "Set tier (strong/medium/weak/compaction)",
         context: KeybindContext::ModelPicker,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Alt("y", "n"),
+        description: "Allow once / deny once",
+        context: KeybindContext::Permission,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single("s"),
+        description: "Allow for this session",
+        context: KeybindContext::Permission,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Alt("a", "A"),
+        description: "Always allow this pattern here / everywhere",
+        context: KeybindContext::Permission,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Alt("d", "D"),
+        description: "Always deny this pattern here / everywhere",
+        context: KeybindContext::Permission,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::PERMISSION_DETAIL.label),
+        description: "Show / hide request detail",
+        context: KeybindContext::Permission,
         platform: Platform::All,
     },
 ];

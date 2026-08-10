@@ -78,7 +78,9 @@ impl SummaryBlock {
 /// The weak model to write summary prose with, or `None` for the structural
 /// block: the opt-in is off, or there is no model to opt in to.
 pub(crate) fn polish_model(ui: &UiConfig) -> Option<String> {
-    ui.polish_summaries.then(|| ui.notify_model.clone()).flatten()
+    ui.polish_summaries
+        .then(|| ui.notify_model.clone())
+        .flatten()
 }
 
 /// Adds the prose line, and hands the block back untouched when the model is

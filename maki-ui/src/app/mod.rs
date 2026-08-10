@@ -39,6 +39,7 @@ use crate::components::mcp_picker::{McpPicker, McpPickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::permission_prompt::PermissionPrompt;
 use crate::components::plan_form::{PlanForm, PlanFormAction};
+use crate::components::return_summary::{IDLE_GAP, SummaryBlock, polish, polish_model};
 use crate::components::review_picker::{ReviewPicker, ReviewPickerAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
 use crate::components::scrollbar;
@@ -46,7 +47,6 @@ use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::status_bar::StatusBar;
 use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
-use crate::components::return_summary::{IDLE_GAP, SummaryBlock, polish, polish_model};
 use crate::components::turn_telemetry::TurnTelemetry;
 use crate::components::usage_modal::{UsageFetchState, UsageModal};
 use crate::components::{
@@ -586,15 +586,16 @@ impl App {
     }
 
     fn dispatch_overlay(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
-        if self.permission_prompt.is_open() {
-            if let Some(answer) = self.permission_prompt.handle_key(key) {
+        if self.permission_prompt.is_awaiting() {
+            if let Some((choice, answer)) = self.permission_prompt.handle_key(key) {
                 let subagent_id = self.permission_prompt.subagent_id().map(str::to_owned);
                 let encoded = answer.encode();
-                self.permission_prompt.close();
+                self.permission_prompt.acknowledge(choice);
                 self.send_to_agent(subagent_id.as_deref(), encoded);
             }
             return Some(vec![]);
         }
+        self.permission_prompt.clear_acknowledgment();
 
         // plan_form is non-modal: Passthrough falls through to the rest of dispatch
         if self.plan_form_active() {
@@ -1182,6 +1183,9 @@ impl App {
             }
         }
 
+        // The acknowledgment only bridges the gap until the run moves again.
+        self.permission_prompt.clear_acknowledgment();
+
         let plan_path = if self.state.mode == Mode::Plan {
             self.state.plan.path()
         } else {
@@ -1197,8 +1201,9 @@ impl App {
         }
 
         if let ChatEventResult::PermissionRequest { id, tool, scopes } = result {
+            let cwd = self.state.session.cwd.clone();
             self.permission_prompt
-                .open(id, tool, scopes, subagent_id.clone());
+                .open(id, tool, scopes, cwd, subagent_id.clone());
             return vec![];
         }
 
@@ -1725,8 +1730,10 @@ impl App {
 
     fn push_summary(&mut self, block: SummaryBlock) {
         let text = block.search_text();
-        self.main_chat()
-            .push(DisplayMessage::new(DisplayRole::Closure(Box::new(block)), text));
+        self.main_chat().push(DisplayMessage::new(
+            DisplayRole::Closure(Box::new(block)),
+            text,
+        ));
     }
 
     pub fn poll_polish(&mut self) {

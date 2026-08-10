@@ -46,12 +46,7 @@ impl App {
         self.render_bottom_panel(frame, &layout);
         self.render_splits(frame, &layout);
         let mut overlay_rect = self.render_picker_overlays(frame, &layout);
-        self.render_status_bar(
-            frame,
-            layout.status_area,
-            render_chat,
-            task_line.is_some(),
-        );
+        self.render_status_bar(frame, layout.status_area, render_chat, task_line.is_some());
         overlay_rect = self.render_top_modals(frame, overlay_rect);
         self.register_zones(&layout, overlay_rect);
         self.apply_selection(frame, render_chat);
@@ -65,7 +60,7 @@ impl App {
             goal: &self.task_goal,
             tool: self.turn_telemetry.current_tool(),
             elapsed: self.turn_telemetry.running_for(),
-            permission_pending: self.permission_prompt.is_open(),
+            permission_pending: self.permission_prompt.is_awaiting(),
             retry: self.retry_info.as_ref(),
         })
     }

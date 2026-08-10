@@ -27,6 +27,7 @@ use test_case::test_case;
 
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TASK_ID: &str = "task1";
+const CWD: &str = "/tmp/project";
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone { area, zone });
@@ -3657,13 +3658,14 @@ fn ctrl_c_denies_permission_prompt() {
         "id".into(),
         maki_config::ToolKey::native("bash"),
         vec!["execute".into()],
+        CWD.into(),
         None,
     );
-    assert!(app.permission_prompt.is_open());
+    assert!(app.permission_prompt.is_awaiting());
 
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::None);
-    assert!(!app.permission_prompt.is_open());
+    assert!(!app.permission_prompt.is_awaiting());
     assert!(actions.is_empty());
 }
 
@@ -3765,6 +3767,7 @@ fn permission_prompt_takes_bottom_precedence_over_below_split() {
         "perm-1".into(),
         maki_config::ToolKey::native("bash"),
         vec!["ls".into()],
+        CWD.into(),
         None,
     );
 
@@ -4295,7 +4298,12 @@ fn run_tool(app: &mut App, id: &str, tool: &str, done: AgentEvent) {
 fn closure_block_only_after_a_qualifying_run(edited: bool, expect_closure: bool) {
     let mut app = streaming_app();
     if edited {
-        run_tool(&mut app, CLOSURE_TOOL_ID, "edit", edit_done(CLOSURE_TOOL_ID));
+        run_tool(
+            &mut app,
+            CLOSURE_TOOL_ID,
+            "edit",
+            edit_done(CLOSURE_TOOL_ID),
+        );
     } else {
         run_tool(
             &mut app,
@@ -4316,7 +4324,12 @@ fn closure_block_only_after_a_qualifying_run(edited: bool, expect_closure: bool)
 fn closure_block_names_changed_files_and_failed_commands() {
     const FAILED_ID: &str = "b1";
     let mut app = streaming_app();
-    run_tool(&mut app, CLOSURE_TOOL_ID, "edit", edit_done(CLOSURE_TOOL_ID));
+    run_tool(
+        &mut app,
+        CLOSURE_TOOL_ID,
+        "edit",
+        edit_done(CLOSURE_TOOL_ID),
+    );
     run_tool(
         &mut app,
         FAILED_ID,
@@ -4342,7 +4355,12 @@ fn app_after_edit(focused: bool, polish: bool) -> App {
     app.ui_config.polish_summaries = polish;
     app.ui_config.notify_model = polish.then(|| POLISH_MODEL.to_owned());
     app.set_os_focused(focused);
-    run_tool(&mut app, CLOSURE_TOOL_ID, "edit", edit_done(CLOSURE_TOOL_ID));
+    run_tool(
+        &mut app,
+        CLOSURE_TOOL_ID,
+        "edit",
+        edit_done(CLOSURE_TOOL_ID),
+    );
     app.update(done_event());
     app
 }

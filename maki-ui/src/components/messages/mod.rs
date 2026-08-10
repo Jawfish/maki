@@ -16,12 +16,12 @@ use super::{
     DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
     timing::ToolTiming,
 };
-use crate::components::marker::running_marker;
 use crate::components::keybindings::key;
 use crate::components::layout::{
     SPACING_BLOCK, SPACING_SECTION, blank_rows, prose_measure, separator_rows,
     wrap_with_hanging_indent,
 };
+use crate::components::marker::running_marker;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
@@ -1249,10 +1249,8 @@ impl MessagesPanel {
     }
 
     fn update_spinners(&mut self) {
-        let spinner_span = running_marker(
-            self.started_at.elapsed().as_millis(),
-            self.spinner_animated,
-        );
+        let spinner_span =
+            running_marker(self.started_at.elapsed().as_millis(), self.spinner_animated);
         for seg in self.cache.segments_mut() {
             seg.update_spinners(&spinner_span);
             seg.update_elapsed();

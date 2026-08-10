@@ -145,7 +145,6 @@ impl TurnTelemetry {
         lines
     }
 
-
     fn headline_spans(&self, lead: Option<String>) -> Vec<Span<'static>> {
         let state = if self.commands.iter().any(|c| c.failed) {
             State::Failed
@@ -189,7 +188,10 @@ impl TurnTelemetry {
     fn record_file_change(&mut self, output: &ToolOutput) {
         let (path, added, removed) = match output {
             ToolOutput::Diff {
-                path, before, after, ..
+                path,
+                before,
+                after,
+                ..
             } => {
                 let (added, removed) = diff_stat(before, after);
                 (path.clone(), added, removed)
