@@ -272,6 +272,10 @@ impl Chat {
         self.messages_panel.stream_reset();
     }
 
+    pub fn toggle_thinking_visibility(&mut self) -> bool {
+        self.messages_panel.toggle_thinking_visibility()
+    }
+
     pub fn flush(&mut self) {
         self.messages_panel.flush();
     }

@@ -375,6 +375,19 @@ impl MessagesPanel {
         self.cancel_in_progress();
     }
 
+    pub fn toggle_thinking_visibility(&mut self) -> bool {
+        self.show_thinking = !self.show_thinking;
+        self.thinking_collapsed = !self.show_thinking;
+        let width = self.viewport_width;
+        for idx in 0..self.messages.len() {
+            if matches!(self.messages[idx].role, DisplayRole::Thinking) {
+                self.messages[idx].thinking_collapsed = !self.show_thinking;
+                self.rebuild_thinking_segment(idx, width);
+            }
+        }
+        self.show_thinking
+    }
+
     pub fn fail_in_progress_with_message(&mut self, message: String) {
         self.fail_in_progress_except(message, &HashSet::new());
     }

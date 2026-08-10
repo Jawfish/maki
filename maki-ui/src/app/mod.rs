@@ -62,7 +62,7 @@ use maki_agent::{
 };
 use maki_config::UiConfig;
 use maki_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader, WinView};
-use maki_providers::{Model, ThinkingConfig, add_cost};
+use maki_providers::{ContentBlock, Model, Role, ThinkingConfig, add_cost};
 use maki_storage::StateDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
@@ -88,6 +88,8 @@ const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
 const FLASH_NO_PLAN: &str = "No plan file";
+const FLASH_THINKING_SHOWN: &str = "Thinking shown";
+const FLASH_THINKING_HIDDEN: &str = "Thinking hidden";
 const FAST_UNSUPPORTED_MSG: &str = "Fast mode requires an Anthropic Opus 4.6+ model (API only)";
 const FAST_ON_MSG: &str = "Fast mode: on";
 const FAST_OFF_MSG: &str = "Fast mode: off";
@@ -521,6 +523,18 @@ impl App {
         }
         if key::REVIEW.matches(key) {
             self.review_picker.open();
+            return Some(vec![]);
+        }
+        if key::TOGGLE_THINKING.matches(key) {
+            let shown = self.active_chat().toggle_thinking_visibility();
+            self.flash(
+                if shown {
+                    FLASH_THINKING_SHOWN
+                } else {
+                    FLASH_THINKING_HIDDEN
+                }
+                .into(),
+            );
             return Some(vec![]);
         }
         if key::PREV_CHAT.matches(key) {
@@ -1566,6 +1580,23 @@ impl App {
     /// user is waiting on is always the main conversation's.
     pub(crate) fn last_assistant_text(&self) -> Option<&str> {
         self.chats.first()?.last_assistant_text()
+    }
+
+    /// What the reply was answering. Tool results travel as user-role
+    /// messages, so only a text block counts as something the user asked.
+    pub(crate) fn last_user_text(&self) -> Option<String> {
+        let history = self.shared_history.as_ref()?.load();
+        history
+            .messages
+            .iter()
+            .rev()
+            .filter(|m| matches!(m.role, Role::User) && !m.is_observation())
+            .find_map(|m| {
+                m.content.iter().find_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+            })
     }
 
     pub fn has_modal_overlay(&self) -> bool {

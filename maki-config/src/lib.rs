@@ -329,6 +329,7 @@ pub struct UiFileConfig {
     pub mouse_scroll_lines: Option<u32>,
     pub show_thinking: Option<bool>,
     pub notify: Option<bool>,
+    pub notify_model: Option<String>,
     pub theme: Option<String>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
@@ -346,6 +347,7 @@ impl UiFileConfig {
             mouse_scroll_lines,
             show_thinking,
             notify,
+            notify_model,
             theme,
             max_input_lines
         );
@@ -845,6 +847,13 @@ pub struct UiConfig {
     )]
     pub notify: bool,
 
+    #[config(
+        ty = "String",
+        default = "None",
+        desc = "Model spec used to write the notification body, e.g. `openai/gpt-5.4-nano`. Unset sends the start of the reply instead"
+    )]
+    pub notify_model: Option<String>,
+
     #[config(skip, default = "None")]
     pub theme: Option<String>,
 
@@ -869,6 +878,7 @@ impl UiConfig {
             max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
             show_thinking: f.show_thinking.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
+            notify_model: f.notify_model,
             theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }

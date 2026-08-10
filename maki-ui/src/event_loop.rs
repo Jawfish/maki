@@ -113,6 +113,13 @@ impl SessionStatus {
             Self::Idle => "idle",
         }
     }
+
+    fn notify_label(self) -> &'static str {
+        match self {
+            Self::NeedsInput => crate::notify::STATUS_NEEDS_INPUT,
+            _ => crate::notify::STATUS_DONE,
+        }
+    }
 }
 
 /// The reply itself is the useful part of a notification, so the generic
@@ -126,6 +133,35 @@ fn notify_body(app: &App, status: SessionStatus) -> String {
         .map(crate::notify::snippet)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| FINISHED_BODY.into())
+}
+
+/// Hands the reply to `ui.notify_model` when one is configured, and posts the
+/// quoted fallback the moment that model is slow, unset, or unhappy.
+fn notify_finished(app: &App, status: SessionStatus, timeouts: Timeouts) {
+    let title = crate::notify::title(&app.state.session.cwd, status.notify_label());
+    let fallback = notify_body(app, status);
+    let reply = app.last_assistant_text().unwrap_or_default();
+    let Some(spec) = app
+        .ui_config
+        .notify_model
+        .clone()
+        .filter(|_| crate::notify::worth_summarizing(reply))
+    else {
+        crate::notify::send(title, fallback);
+        return;
+    };
+    let prompt = crate::notify::summary_prompt(
+        app.last_user_text().as_deref(),
+        reply,
+        status == SessionStatus::NeedsInput,
+    );
+    smol::spawn(async move {
+        let body = crate::notify::summarize(spec, timeouts, prompt)
+            .await
+            .unwrap_or(fallback);
+        crate::notify::send(title, body);
+    })
+    .detach();
 }
 
 fn claim_idle_wake(
@@ -671,10 +707,7 @@ impl<'t> EventLoop<'t> {
                 && matches!(status, SessionStatus::Idle | SessionStatus::NeedsInput);
             rt.last_status = status;
             if finished && !os_focused && rt.app.ui_config.notify {
-                crate::notify::send(
-                    rt.app.state.session.title.clone(),
-                    notify_body(&rt.app, status),
-                );
+                notify_finished(&rt.app, status, self.ctx.timeouts);
             }
             handle.fire_autocmd(
                 "SessionStatusChanged",

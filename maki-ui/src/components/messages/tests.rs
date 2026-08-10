@@ -1690,6 +1690,41 @@ fn hide_keeps_cached_thinking_as_indicator() {
 }
 
 #[test]
+fn toggle_thinking_visibility_flips_cached_and_streaming() {
+    let mut panel = MessagesPanel::new(test_ui_config(), EventHandle::disconnected_for_test());
+    panel.thinking_delta("cached reasoning");
+    panel.flush();
+    panel.streaming_thinking.set_buffer("live reasoning");
+    render(&mut panel, 80, 20);
+
+    assert!(
+        !panel.toggle_thinking_visibility(),
+        "first toggle should hide thinking"
+    );
+    let terminal = render(&mut panel, 80, 20);
+    let text = buffer_text(&terminal);
+    assert!(
+        text.contains("thinking> ..."),
+        "hidden view should show the indicator; got: {text}"
+    );
+    assert!(
+        !text.contains("cached reasoning") && !text.contains("live reasoning"),
+        "reasoning must be hidden after toggle; got: {text}"
+    );
+
+    assert!(
+        panel.toggle_thinking_visibility(),
+        "second toggle should show thinking again"
+    );
+    let terminal = render(&mut panel, 80, 20);
+    let text = buffer_text(&terminal);
+    assert!(
+        text.contains("cached reasoning") && text.contains("live reasoning"),
+        "reasoning must be visible after toggling back; got: {text}"
+    );
+}
+
+#[test]
 fn full_default_renders_streaming_thinking() {
     let mut panel = MessagesPanel::new(test_ui_config(), EventHandle::disconnected_for_test());
     panel.streaming_thinking.set_buffer("visible reasoning");

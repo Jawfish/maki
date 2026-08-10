@@ -168,6 +168,9 @@ pub mod key {
     /// Shares Ctrl+R with `REFRESH`: the usage modal intercepts it first,
     /// so refresh wins while that modal is open.
     pub const REVIEW: Bind = ctrl_bind!('r');
+    /// Shares Ctrl+Y with `SCROLL_LINE_UP`: modals and pickers intercept it
+    /// first, so line scroll wins while they are open.
+    pub const TOGGLE_THINKING: Bind = ctrl_bind!('y');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -367,6 +370,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::REVIEW.label),
         description: "Review a code change",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::TOGGLE_THINKING.label),
+        description: "Show / hide thinking",
         context: KeybindContext::General,
         platform: Platform::All,
     },
