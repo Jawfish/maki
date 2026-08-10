@@ -226,6 +226,10 @@ impl Chat {
         self.messages_panel.set_accent(color);
     }
 
+    pub fn set_spinner_animated(&mut self, animated: bool) {
+        self.messages_panel.set_spinner_animated(animated);
+    }
+
     pub fn is_animating(&self) -> bool {
         self.messages_panel.is_animating()
     }

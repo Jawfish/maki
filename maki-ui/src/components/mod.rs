@@ -27,6 +27,7 @@ pub(crate) mod split_layout;
 pub mod status_bar;
 pub(crate) mod streaming_content;
 pub(crate) mod subscription_usage;
+pub(crate) mod task_line;
 pub(crate) mod theme_picker;
 pub(crate) mod timing;
 pub(crate) mod tool_display;

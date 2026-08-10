@@ -167,6 +167,8 @@ pub struct App {
     pub(crate) queue: MessageQueue,
     recoverable_queue: Vec<String>,
     pub(super) turn_telemetry: TurnTelemetry,
+    /// What the current run was asked to do, shown by the task line.
+    pub(super) task_goal: String,
     pub answer_tx: Option<flume::Sender<String>>,
     pub(crate) cmd_tx: Option<flume::Sender<super::AgentCommand>>,
     pub(super) pending_input: PendingInput,
@@ -262,6 +264,7 @@ impl App {
             queue: MessageQueue::default(),
             recoverable_queue: Vec::new(),
             turn_telemetry: TurnTelemetry::default(),
+            task_goal: String::new(),
             answer_tx: None,
             cmd_tx: None,
             pending_input: PendingInput::None,

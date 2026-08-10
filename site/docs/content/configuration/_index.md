@@ -72,6 +72,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
 | `prose_width` | u32 | `88` | 20 | Maximum width in cells for assistant and thinking prose. Tool output, diffs, and tables stay full width |
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
+| `task_line` | bool | `true` | - | Show a single line above the history while the agent runs, with the goal, the current phase, the elapsed time, and anything blocking the run. Hidden when idle |
 | `notify` | bool | `true` | - | Send a desktop notification when a turn finishes or needs input while the terminal window is unfocused |
 | `notify_model` | String | `none` | - | Model spec used to write the notification body, e.g. `openai/gpt-5.4-nano`. Unset sends the start of the reply instead |
 

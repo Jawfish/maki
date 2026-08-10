@@ -11,7 +11,6 @@ use maki_agent::tools::{BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, TASK_TOOL_NAME
 use maki_agent::{ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_providers::add_cost;
 use ratatui::text::{Line, Span};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// A run closes with a summary when it edited anything, or when it ran enough
@@ -52,7 +51,9 @@ pub struct TurnTelemetry {
     /// Tools that started and never reported back: the run ended with those
     /// decisions still open.
     pending: Vec<String>,
-    running: HashMap<String, String>,
+    /// Start order matters: the newest still-running tool is the phase the
+    /// task line reports.
+    running: Vec<(String, String)>,
     tool_count: usize,
     cost: Option<f64>,
     started_at: Option<Instant>,
@@ -72,14 +73,14 @@ impl TurnTelemetry {
         if event.tool.as_ref() == TASK_TOOL_NAME {
             self.subagents.push(label.clone());
         }
-        self.running.insert(event.id.clone(), label);
+        self.running.push((event.id.clone(), label));
     }
 
     pub(crate) fn record_done(&mut self, event: &ToolDoneEvent) {
-        let label = self
-            .running
-            .remove(&event.id)
-            .unwrap_or_else(|| event.tool.to_string());
+        let label = match self.running.iter().position(|(id, _)| *id == event.id) {
+            Some(i) => self.running.remove(i).1,
+            None => event.tool.to_string(),
+        };
         self.tool_count += 1;
         if is_command(&event.tool) {
             self.commands.push(CommandRun {
@@ -96,10 +97,19 @@ impl TurnTelemetry {
         add_cost(&mut self.cost, cost);
     }
 
+    /// The tool the run is waiting on right now, if any.
+    pub(crate) fn current_tool(&self) -> Option<&str> {
+        self.running.last().map(|(_, label)| label.as_str())
+    }
+
+    pub(crate) fn running_for(&self) -> Option<Duration> {
+        self.started_at.map(|start| start.elapsed())
+    }
+
     /// Freezes the run: whatever is still running is a pending decision.
     pub(crate) fn finish(&mut self) {
         self.elapsed = self.started_at.map(|start| start.elapsed());
-        self.pending = self.running.drain().map(|(_, label)| label).collect();
+        self.pending = self.running.drain(..).map(|(_, label)| label).collect();
         self.pending.sort();
     }
 

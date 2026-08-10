@@ -336,6 +336,7 @@ pub struct UiFileConfig {
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
     pub prose_width: Option<u32>,
+    pub task_line: Option<bool>,
 }
 
 impl UiFileConfig {
@@ -353,7 +354,8 @@ impl UiFileConfig {
             notify_model,
             theme,
             max_input_lines,
-            prose_width
+            prose_width,
+            task_line
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
             (Some(base), Some(over)) => base.merge(over),
@@ -854,6 +856,12 @@ pub struct UiConfig {
 
     #[config(
         default = true,
+        desc = "Show a single line above the history while the agent runs, with the goal, the current phase, the elapsed time, and anything blocking the run. Hidden when idle"
+    )]
+    pub task_line: bool,
+
+    #[config(
+        default = true,
         desc = "Send a desktop notification when a turn finishes or needs input while the terminal window is unfocused"
     )]
     pub notify: bool,
@@ -889,6 +897,7 @@ impl UiConfig {
             max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
             prose_width: f.prose_width.unwrap_or(DEFAULT_PROSE_WIDTH),
             show_thinking: f.show_thinking.unwrap_or(true),
+            task_line: f.task_line.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
             notify_model: f.notify_model,
             theme: f.theme,

@@ -16,7 +16,7 @@ use super::{
     DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
     timing::ToolTiming,
 };
-use crate::animation::spinner_str;
+use crate::components::marker::running_marker;
 use crate::components::keybindings::key;
 use crate::components::layout::{
     SPACING_BLOCK, SPACING_SECTION, blank_rows, prose_measure, separator_rows,
@@ -86,6 +86,8 @@ pub struct MessagesPanel {
     lua_event_handle: EventHandle,
     restore_event_tx: Option<EventSender>,
     show_thinking: bool,
+    /// False while the task line is up: it is then the only animated thing.
+    spinner_animated: bool,
     thinking_collapsed: bool,
     /// One re-bake per tool per generation; `snapshot_theme_gen`
     /// only bumps when colors actually land.
@@ -135,6 +137,7 @@ impl MessagesPanel {
             show_thinking: ui_config.show_thinking,
             thinking_collapsed: !ui_config.show_thinking,
             rebake_requested: HashMap::new(),
+            spinner_animated: true,
             prompt_progress: None,
         }
     }
@@ -624,6 +627,10 @@ impl MessagesPanel {
 
     pub fn set_accent(&mut self, color: ratatui::style::Color) {
         self.accent.set(color);
+    }
+
+    pub fn set_spinner_animated(&mut self, animated: bool) {
+        self.spinner_animated = animated;
     }
 
     pub fn handle_click(&mut self, row: u16, area: Rect) -> bool {
@@ -1242,9 +1249,9 @@ impl MessagesPanel {
     }
 
     fn update_spinners(&mut self) {
-        let spinner_span = Span::styled(
-            spinner_str(self.started_at.elapsed().as_millis()),
-            theme::current().spinner,
+        let spinner_span = running_marker(
+            self.started_at.elapsed().as_millis(),
+            self.spinner_animated,
         );
         for seg in self.cache.segments_mut() {
             seg.update_spinners(&spinner_span);

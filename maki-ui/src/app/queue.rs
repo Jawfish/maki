@@ -245,6 +245,7 @@ impl App {
         self.status = Status::Streaming;
         self.fire_session_autocmd("TurnStart", serde_json::json!({}));
         if !display.is_empty() {
+            self.task_goal = display.clone();
             self.main_chat().show_user_message(display);
         }
         vec![Action::SendMessage(Box::new(input))]

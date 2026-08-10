@@ -6,7 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use super::ToolStatus;
-use crate::animation::spinner_frame;
+use crate::animation::{spinner_frame, spinner_str};
 use crate::theme;
 
 const GLYPH_GAP: &str = " ";
@@ -100,9 +100,21 @@ impl State {
     }
 }
 
+/// The running marker used by history tool headers. Only one thing on screen
+/// animates: when the task line is up it owns the motion and the headers show
+/// the static running glyph instead.
+pub(crate) fn running_marker(elapsed_millis: u128, animated: bool) -> Span<'static> {
+    let text = if animated {
+        spinner_str(elapsed_millis).to_owned()
+    } else {
+        format!("{}{GLYPH_GAP}", State::Running.glyph())
+    };
+    Span::styled(text, State::Running.style())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GLYPH_GAP, State};
+    use super::{GLYPH_GAP, State, running_marker};
     use test_case::test_case;
 
     const RUNNING_MILLIS: u128 = 250;
@@ -146,6 +158,25 @@ mod tests {
         assert_eq!(
             State::Done.glyph_text(RUNNING_MILLIS),
             State::Done.glyph_text(0)
+        );
+    }
+
+    #[test]
+    fn running_marker_freezes_when_it_defers_to_the_task_line() {
+        let animated = running_marker(0, true).content;
+        assert_ne!(animated, running_marker(RUNNING_MILLIS, true).content);
+        assert_eq!(
+            running_marker(RUNNING_MILLIS, false).content,
+            running_marker(0, false).content
+        );
+        assert_eq!(
+            running_marker(RUNNING_MILLIS, false).content,
+            format!("{}{GLYPH_GAP}", State::Running.glyph())
+        );
+        assert_eq!(
+            running_marker(0, false).content.chars().count(),
+            animated.chars().count(),
+            "static marker must keep the spinner's width"
         );
     }
 }

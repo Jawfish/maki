@@ -7,6 +7,7 @@ use crate::components::keybindings::display_label;
 use crate::components::queue_panel;
 use crate::components::split_layout::{MIN_CHAT_ROWS, SplitLayout, carve};
 use crate::components::status_bar::{StatusBarContext, UsageStats};
+use crate::components::task_line::{TASK_LINE_ROWS, TaskLine, TaskLineInput};
 use crate::components::usage_modal::UsageModalContext;
 use crate::selection::{self, SelectableZone, SelectionZone, ZoneRegistry};
 use crate::theme;
@@ -14,12 +15,13 @@ use maki_lua::Split;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use super::{App, Mode, Status};
 
 struct ViewLayout {
     msg_area: Rect,
+    task_area: Option<Rect>,
     bottom_area: Rect,
     status_area: Rect,
     queue_area: Rect,
@@ -34,10 +36,12 @@ impl App {
         self.status_bar.clear_expired_hint();
 
         let form_visible = self.permission_prompt.is_open() || self.plan_form_active();
-        let layout = self.compute_layout(frame.area(), form_visible);
+        let task_line = self.task_line();
+        let layout = self.compute_layout(frame.area(), form_visible, task_line.is_some());
         let render_chat = self.resolve_render_chat();
 
         self.render_background(frame);
+        self.render_task_line(frame, &layout, task_line.as_ref());
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
         self.render_splits(frame, &layout);
@@ -48,7 +52,20 @@ impl App {
         self.apply_selection(frame, render_chat);
     }
 
-    fn compute_layout(&self, area: Rect, form_visible: bool) -> ViewLayout {
+    /// Built fresh every frame: the line only exists while a run does.
+    fn task_line(&self) -> Option<TaskLine> {
+        TaskLine::build(TaskLineInput {
+            enabled: self.ui_config.task_line,
+            streaming: self.status == Status::Streaming,
+            goal: &self.task_goal,
+            tool: self.turn_telemetry.current_tool(),
+            elapsed: self.turn_telemetry.running_for(),
+            permission_pending: self.permission_prompt.is_open(),
+            retry: self.retry_info.as_ref(),
+        })
+    }
+
+    fn compute_layout(&self, area: Rect, form_visible: bool, task_line: bool) -> ViewLayout {
         let permission_open = self.permission_prompt.is_open();
 
         // Carve the full-width status bar first so the split carving below only
@@ -89,8 +106,21 @@ impl App {
 
         // The `below` split lives outside `inner` (drawn by render_splits), so
         // the bottom panel only ever splits the chat region.
-        let [msg_area, bottom_area] =
+        // The `below` split lives outside `inner` (drawn by render_splits), so
+        // the bottom panel only ever splits the chat region.
+        let [chat_area, bottom_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(bottom_height)]).areas(inner);
+
+        // The row is carved only while the line shows, so an idle history
+        // never shifts under the user.
+        let (task_area, msg_area) = if task_line {
+            let [task, msg] =
+                Layout::vertical([Constraint::Length(TASK_LINE_ROWS), Constraint::Min(1)])
+                    .areas(chat_area);
+            (Some(task), msg)
+        } else {
+            (None, chat_area)
+        };
 
         let panel_reqs = if bottom_takeover {
             Vec::new()
@@ -121,6 +151,7 @@ impl App {
 
         ViewLayout {
             msg_area,
+            task_area,
             bottom_area,
             status_area,
             queue_area,
@@ -150,7 +181,20 @@ impl App {
     fn render_messages(&mut self, frame: &mut Frame, layout: &ViewLayout, render_chat: usize) {
         let accent = self.effective_mode_color();
         self.chats[render_chat].set_accent(accent);
+        self.chats[render_chat].set_spinner_animated(layout.task_area.is_none());
         self.chats[render_chat].view(frame, layout.msg_area, self.selection_state.is_some());
+    }
+
+    fn render_task_line(
+        &mut self,
+        frame: &mut Frame,
+        layout: &ViewLayout,
+        task: Option<&TaskLine>,
+    ) {
+        let (Some(area), Some(task)) = (layout.task_area, task) else {
+            return;
+        };
+        frame.render_widget(Paragraph::new(task.line(area.width)), area);
     }
 
     fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout) {
@@ -410,7 +454,7 @@ impl App {
     #[cfg(test)]
     pub(super) fn layout_geometry(&self, area: Rect) -> (Rect, Rect, Rect, Rect, SplitLayout) {
         let form_visible = self.permission_prompt.is_open() || self.plan_form_active();
-        let layout = self.compute_layout(area, form_visible);
+        let layout = self.compute_layout(area, form_visible, self.task_line().is_some());
         (
             layout.msg_area,
             layout.bottom_area,
