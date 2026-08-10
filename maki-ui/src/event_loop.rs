@@ -594,6 +594,7 @@ impl<'t> EventLoop<'t> {
             rt.app.tick_edge_scroll();
             rt.app.tick_error_expiry();
             rt.app.poll_image_paste();
+            rt.app.poll_polish();
             rt.app.btw_modal.poll();
             rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
@@ -953,14 +954,21 @@ impl<'t> EventLoop<'t> {
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             Event::FocusGained => {
-                self.os_focused = true;
+                self.set_os_focus(true);
                 (None, None)
             }
             Event::FocusLost => {
-                self.os_focused = false;
+                self.set_os_focus(false);
                 (None, None)
             }
             _ => (None, None),
+        }
+    }
+
+    fn set_os_focus(&mut self, focused: bool) {
+        self.os_focused = focused;
+        for rt in &mut self.sessions {
+            rt.app.set_os_focused(focused);
         }
     }
 

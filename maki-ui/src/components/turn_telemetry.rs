@@ -117,9 +117,11 @@ impl TurnTelemetry {
         self.files.len() >= MIN_EDITS_FOR_CLOSURE || self.tool_count >= MIN_TOOLS_FOR_CLOSURE
     }
 
-    pub(crate) fn closure_lines(&self) -> Vec<Line<'static>> {
+    /// The block a run ends with. `lead` names the occasion when the block is
+    /// not the closure itself, like a summary shown on return.
+    pub(crate) fn lines(&self, lead: Option<String>) -> Vec<Line<'static>> {
         let t = theme::current();
-        let mut lines = vec![Line::from(self.headline_spans())];
+        let mut lines = vec![Line::from(self.headline_spans(lead))];
         for file in &self.files {
             lines.push(Line::from(vec![
                 Span::styled(MESSAGE_INDENT, t.tool_dim),
@@ -143,20 +145,8 @@ impl TurnTelemetry {
         lines
     }
 
-    pub(crate) fn search_text(&self) -> String {
-        self.closure_lines()
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 
-    fn headline_spans(&self) -> Vec<Span<'static>> {
+    fn headline_spans(&self, lead: Option<String>) -> Vec<Span<'static>> {
         let state = if self.commands.iter().any(|c| c.failed) {
             State::Failed
         } else if self.pending.is_empty() {
@@ -165,7 +155,7 @@ impl TurnTelemetry {
             State::NeedsAttention
         };
         let mut spans = state.label_spans(0).to_vec();
-        for field in self.headline_fields() {
+        for field in lead.into_iter().chain(self.headline_fields()) {
             spans.push(Span::styled(
                 format!("{FIELD_GAP}{field}"),
                 theme::current().tool_dim,
@@ -346,7 +336,7 @@ mod tests {
         t.record_start(&start("e2", EDIT_TOOL_NAME, ""));
         t.record_done(&done("e2", EDIT_TOOL_NAME, edit_output(), false));
         t.finish();
-        let text = text_of(&t.closure_lines());
+        let text = text_of(&t.lines(None));
         assert!(text.contains(PATH), "{text}");
         assert!(text.contains("+4"), "{text}");
         assert!(text.contains("-2"), "{text}");
@@ -356,7 +346,7 @@ mod tests {
     fn single_edit_reports_its_diffstat() {
         let mut t = edited_turn();
         t.finish();
-        let text = text_of(&t.closure_lines());
+        let text = text_of(&t.lines(None));
         assert!(text.contains(EXPECTED_ADDED), "{text}");
         assert!(text.contains(EXPECTED_REMOVED), "{text}");
     }
@@ -369,7 +359,7 @@ mod tests {
         t.record_start(&start("t1", TASK_TOOL_NAME, SUBAGENT));
         t.record_done(&done("t1", TASK_TOOL_NAME, plain(), false));
         t.finish();
-        let text = text_of(&t.closure_lines());
+        let text = text_of(&t.lines(None));
         assert!(text.contains(State::Failed.label()), "{text}");
         assert!(text.contains(CMD), "{text}");
         assert!(text.contains("1 subagent"), "{text}");
@@ -381,7 +371,7 @@ mod tests {
         let mut t = edited_turn();
         t.record_start(&start("q1", QUESTION_TOOL_NAME, QUESTION));
         t.finish();
-        let text = text_of(&t.closure_lines());
+        let text = text_of(&t.lines(None));
         assert!(text.contains(State::NeedsAttention.label()), "{text}");
         assert!(text.contains(QUESTION), "{text}");
     }
@@ -413,6 +403,7 @@ mod tests {
         t.record_cost(Some(FIRST));
         t.record_cost(Some(SECOND));
         t.finish();
-        assert!(t.search_text().contains("$0.003"), "{}", t.search_text());
+        let text = text_of(&t.lines(None));
+        assert!(text.contains("$0.003"), "{text}");
     }
 }

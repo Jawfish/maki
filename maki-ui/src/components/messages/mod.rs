@@ -1347,9 +1347,9 @@ impl MessagesPanel {
                         .push(Segment::with_lines(lines, search_text, Some(i)));
                     continue;
                 }
-                if let DisplayRole::Closure(telemetry) = &msg.role {
-                    let lines = telemetry.closure_lines();
-                    let search_text = telemetry.search_text();
+                if let DisplayRole::Closure(block) = &msg.role {
+                    let lines = block.lines();
+                    let search_text = block.search_text();
                     self.cache.push_spacing(SPACING_SECTION);
                     self.cache
                         .push(Segment::with_lines(lines, search_text, Some(i)));

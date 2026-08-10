@@ -25,6 +25,7 @@ pub(crate) mod scrollbar;
 pub(crate) mod search_modal;
 pub(crate) mod split_layout;
 pub mod status_bar;
+pub(crate) mod return_summary;
 pub(crate) mod streaming_content;
 pub(crate) mod subscription_usage;
 pub(crate) mod task_line;
@@ -44,7 +45,7 @@ use maki_agent::{BufferSnapshot, ToolInput, ToolOutput};
 use maki_providers::{Message, ModelTier};
 use ratatui::text::{Line, Span};
 use timing::ToolTiming;
-use turn_telemetry::TurnTelemetry;
+use return_summary::SummaryBlock;
 
 pub(crate) const CHEVRON: &str = "❯ ";
 
@@ -365,7 +366,7 @@ pub enum DisplayRole {
     Tool(Box<ToolRole>),
     Error,
     Done,
-    Closure(Box<TurnTelemetry>),
+    Closure(Box<SummaryBlock>),
 }
 
 impl DisplayRole {

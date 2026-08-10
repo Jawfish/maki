@@ -332,6 +332,7 @@ pub struct UiFileConfig {
     pub show_thinking: Option<bool>,
     pub notify: Option<bool>,
     pub notify_model: Option<String>,
+    pub polish_summaries: Option<bool>,
     pub theme: Option<String>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
@@ -352,6 +353,7 @@ impl UiFileConfig {
             show_thinking,
             notify,
             notify_model,
+            polish_summaries,
             theme,
             max_input_lines,
             prose_width,
@@ -873,6 +875,12 @@ pub struct UiConfig {
     )]
     pub notify_model: Option<String>,
 
+    #[config(
+        default = false,
+        desc = "Let `ui.notify_model` write one prose line for the closure block at the end of a run and for the since-you-left summary. Off by default: both blocks are built from what the run did, with no extra model call"
+    )]
+    pub polish_summaries: bool,
+
     #[config(skip, default = "None")]
     pub theme: Option<String>,
 
@@ -900,6 +908,7 @@ impl UiConfig {
             task_line: f.task_line.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
             notify_model: f.notify_model,
+            polish_summaries: f.polish_summaries.unwrap_or(false),
             theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }

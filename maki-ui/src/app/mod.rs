@@ -46,6 +46,7 @@ use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::status_bar::StatusBar;
 use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
+use crate::components::return_summary::{IDLE_GAP, SummaryBlock, polish, polish_model};
 use crate::components::turn_telemetry::TurnTelemetry;
 use crate::components::usage_modal::{UsageFetchState, UsageModal};
 use crate::components::{
@@ -63,7 +64,7 @@ use maki_agent::{
 };
 use maki_config::UiConfig;
 use maki_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader, WinView};
-use maki_providers::{ContentBlock, Model, Role, ThinkingConfig, add_cost};
+use maki_providers::{ContentBlock, Model, Role, ThinkingConfig, Timeouts, add_cost};
 use maki_storage::StateDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
@@ -167,6 +168,12 @@ pub struct App {
     pub(crate) queue: MessageQueue,
     recoverable_queue: Vec<String>,
     pub(super) turn_telemetry: TurnTelemetry,
+    /// A run that ends while the terminal is unfocused, or after the user has
+    /// been quiet for [`IDLE_GAP`], owes them this block when they return.
+    os_focused: bool,
+    last_interaction: Instant,
+    pending_return: Option<SummaryBlock>,
+    polish_rx: Vec<flume::Receiver<SummaryBlock>>,
     /// What the current run was asked to do, shown by the task line.
     pub(super) task_goal: String,
     pub answer_tx: Option<flume::Sender<String>>,
@@ -264,6 +271,10 @@ impl App {
             queue: MessageQueue::default(),
             recoverable_queue: Vec::new(),
             turn_telemetry: TurnTelemetry::default(),
+            os_focused: true,
+            last_interaction: Instant::now(),
+            pending_return: None,
+            polish_rx: Vec::new(),
             task_goal: String::new(),
             answer_tx: None,
             cmd_tx: None,
@@ -370,6 +381,9 @@ impl App {
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
+        if !matches!(msg, Msg::Agent(_)) {
+            self.mark_interaction();
+        }
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
@@ -1667,11 +1681,64 @@ impl App {
         if !telemetry.qualifies() {
             return;
         }
-        let text = telemetry.search_text();
-        self.main_chat().push(DisplayMessage::new(
-            DisplayRole::Closure(Box::new(telemetry)),
-            text,
-        ));
+        if self.away() {
+            self.pending_return = Some(SummaryBlock::returning(telemetry.clone()));
+        }
+        self.emit_summary(SummaryBlock::closure(telemetry));
+    }
+
+    pub fn set_os_focused(&mut self, focused: bool) {
+        self.os_focused = focused;
+        if focused {
+            self.mark_interaction();
+        }
+    }
+
+    /// A key, a paste or a click means the user is watching again, so any
+    /// summary held back for their return is due now.
+    fn mark_interaction(&mut self) {
+        self.last_interaction = Instant::now();
+        if let Some(block) = self.pending_return.take() {
+            self.emit_summary(block);
+        }
+    }
+
+    fn away(&self) -> bool {
+        !self.os_focused || self.last_interaction.elapsed() >= IDLE_GAP
+    }
+
+    /// Structural blocks land at once. Polished ones wait for the weak model,
+    /// which answers with the structural block when it has nothing to add.
+    fn emit_summary(&mut self, block: SummaryBlock) {
+        let Some(spec) = polish_model(&self.ui_config) else {
+            self.push_summary(block);
+            return;
+        };
+        let (tx, rx) = flume::bounded(1);
+        let goal = self.task_goal.clone();
+        smol::spawn(async move {
+            let _ = tx.send(polish(spec, Timeouts::default(), goal, block).await);
+        })
+        .detach();
+        self.polish_rx.push(rx);
+    }
+
+    fn push_summary(&mut self, block: SummaryBlock) {
+        let text = block.search_text();
+        self.main_chat()
+            .push(DisplayMessage::new(DisplayRole::Closure(Box::new(block)), text));
+    }
+
+    pub fn poll_polish(&mut self) {
+        let mut i = 0;
+        while i < self.polish_rx.len() {
+            let Ok(block) = self.polish_rx[i].try_recv() else {
+                i += 1;
+                continue;
+            };
+            self.polish_rx.swap_remove(i);
+            self.push_summary(block);
+        }
     }
 
     /// Marks unfinished subagent chats as ended and drops them from

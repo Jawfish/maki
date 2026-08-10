@@ -4330,3 +4330,62 @@ fn closure_block_names_changed_files_and_failed_commands() {
     assert!(text.contains(FAILED_ID), "{text}");
     assert!(text.contains(State::Failed.label()), "{text}");
 }
+
+// --- Since-you-left return summary ---
+
+const RETURN_LEAD: &str = "since you left";
+/// Never resolves to a provider, so the polish task fails before any request.
+const POLISH_MODEL: &str = "definitely-not-a-catalog-slug/any-model";
+
+fn app_after_edit(focused: bool, polish: bool) -> App {
+    let mut app = streaming_app();
+    app.ui_config.polish_summaries = polish;
+    app.ui_config.notify_model = polish.then(|| POLISH_MODEL.to_owned());
+    app.set_os_focused(focused);
+    run_tool(&mut app, CLOSURE_TOOL_ID, "edit", edit_done(CLOSURE_TOOL_ID));
+    app.update(done_event());
+    app
+}
+
+#[test]
+fn a_run_that_ends_unattended_summarizes_itself_on_return() {
+    let mut app = app_after_edit(false, false);
+    assert!(app.pending_return.is_some());
+    let closure = app.chats[0].last_message_text();
+    assert!(!closure.contains(RETURN_LEAD), "{closure}");
+
+    app.set_os_focused(true);
+    assert!(app.pending_return.is_none());
+    let summary = app.chats[0].last_message_text();
+    assert!(summary.contains(RETURN_LEAD), "{summary}");
+    assert!(summary.contains(CLOSURE_PATH), "{summary}");
+}
+
+#[test]
+fn a_watched_run_owes_no_return_summary() {
+    let mut app = app_after_edit(true, false);
+    assert!(app.pending_return.is_none());
+    app.update(Msg::Key(key(KeyCode::Char('x'))));
+    let text = app.chats[0].last_message_text();
+    assert!(!text.contains(RETURN_LEAD), "{text}");
+}
+
+#[test]
+fn the_structural_block_calls_no_model() {
+    let app = app_after_edit(false, false);
+    assert!(app.polish_rx.is_empty());
+    assert!(matches!(
+        app.chats[0].last_message_role(),
+        Some(DisplayRole::Closure(_))
+    ));
+}
+
+#[test]
+fn the_polish_flag_routes_the_block_through_the_weak_model() {
+    let app = app_after_edit(true, true);
+    assert_eq!(app.polish_rx.len(), 1);
+    assert!(!matches!(
+        app.chats[0].last_message_role(),
+        Some(DisplayRole::Closure(_))
+    ));
+}

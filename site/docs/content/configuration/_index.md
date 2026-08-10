@@ -75,6 +75,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `task_line` | bool | `true` | - | Show a single line above the history while the agent runs, with the goal, the current phase, the elapsed time, and anything blocking the run. Hidden when idle |
 | `notify` | bool | `true` | - | Send a desktop notification when a turn finishes or needs input while the terminal window is unfocused |
 | `notify_model` | String | `none` | - | Model spec used to write the notification body, e.g. `openai/gpt-5.4-nano`. Unset sends the start of the reply instead |
+| `polish_summaries` | bool | `false` | - | Let `ui.notify_model` write one prose line for the closure block at the end of a run and for the since-you-left summary. Off by default: both blocks are built from what the run did, with no extra model call |
 
 ### `ui.theme`
 
