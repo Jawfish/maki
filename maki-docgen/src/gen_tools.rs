@@ -10,7 +10,7 @@ use std::sync::Arc;
 use maki_lua::{OptionType, PluginHost};
 
 const DATE_PLACEHOLDER: &str = "YYYY-MM-DD";
-const HASHLINE_EDIT_GUIDANCE: &str = "Syntax-block patches: `PUT N*:` replaces and `CUT N*` deletes the complete declaration or Markdown section at line `N`; `PUT >N*:` inserts after that block, unlike line-based `>N`. Attached decorators, attributes, and documentation are included. Unsupported or ambiguous blocks fail without writing. Block targets never remap when stale: re-read, then re-author the patch with the fresh tag and numbering.";
+const HASHLINE_EDIT_GUIDANCE: &str = "Syntax-block patches: `PUT N*:` replaces and `CUT N*` deletes the complete declaration or Markdown section at line `N`; `PUT >N*:` inserts after that block, unlike line-based `>N`. Attached decorators, attributes, and documentation are included. Unsupported or ambiguous blocks fail without writing. Block targets never remap when stale: re-read, then re-author the patch with the fresh tag and numbering. A section carrying `delete = true` instead of a `patch` removes the file; its tag must hash the current contents, and deletes never remap.";
 
 const SECTIONS: &[(&str, &[&str])] = &[
     (
