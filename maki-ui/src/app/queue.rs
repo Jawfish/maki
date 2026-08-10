@@ -7,6 +7,7 @@ use super::{Action, App, Status, format_with_images};
 
 use crate::agent::shared_queue::{QueueItem, QueueSender};
 use crate::components::queue_panel::QueueEntry;
+use crate::components::turn_telemetry::TurnTelemetry;
 
 pub(crate) use crate::agent::shared_queue::QueuedMessage;
 
@@ -240,6 +241,7 @@ impl App {
         self.run_id += 1;
         // New work supersedes text held for recovery after an agent error.
         self.recoverable_queue.clear();
+        self.turn_telemetry = TurnTelemetry::started();
         self.status = Status::Streaming;
         self.fire_session_autocmd("TurnStart", serde_json::json!({}));
         if !display.is_empty() {

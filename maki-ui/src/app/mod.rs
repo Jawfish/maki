@@ -46,6 +46,7 @@ use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::status_bar::StatusBar;
 use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
+use crate::components::turn_telemetry::TurnTelemetry;
 use crate::components::usage_modal::{UsageFetchState, UsageModal};
 use crate::components::{
     Action, DisplayMessage, DisplayRole, ExitRequest, Overlay, RetryInfo, Status, is_ctrl,
@@ -165,6 +166,7 @@ pub struct App {
     pub(crate) exit_on_done: bool,
     pub(crate) queue: MessageQueue,
     recoverable_queue: Vec<String>,
+    pub(super) turn_telemetry: TurnTelemetry,
     pub answer_tx: Option<flume::Sender<String>>,
     pub(crate) cmd_tx: Option<flume::Sender<super::AgentCommand>>,
     pub(super) pending_input: PendingInput,
@@ -259,6 +261,7 @@ impl App {
             exit_on_done: false,
             queue: MessageQueue::default(),
             recoverable_queue: Vec::new(),
+            turn_telemetry: TurnTelemetry::default(),
             answer_tx: None,
             cmd_tx: None,
             pending_input: PendingInput::None,
@@ -1062,21 +1065,32 @@ impl App {
             return vec![];
         }
 
+        let from_main_chat = envelope.subagent.is_none();
         match &envelope.event {
-            AgentEvent::ToolStart(event) => self.fire_session_autocmd(
-                "ToolStart",
-                serde_json::json!({
-                    "tool_id": event.id,
-                    "tool": event.tool,
-                }),
-            ),
-            AgentEvent::ToolDone(event) => self.fire_session_autocmd(
-                "ToolDone",
-                serde_json::json!({
-                    "tool_id": event.id,
-                    "tool": event.tool,
-                }),
-            ),
+            AgentEvent::ToolStart(event) => {
+                if from_main_chat {
+                    self.turn_telemetry.record_start(event);
+                }
+                self.fire_session_autocmd(
+                    "ToolStart",
+                    serde_json::json!({
+                        "tool_id": event.id,
+                        "tool": event.tool,
+                    }),
+                );
+            }
+            AgentEvent::ToolDone(event) => {
+                if from_main_chat {
+                    self.turn_telemetry.record_done(event);
+                }
+                self.fire_session_autocmd(
+                    "ToolDone",
+                    serde_json::json!({
+                        "tool_id": event.id,
+                        "tool": event.tool,
+                    }),
+                );
+            }
             _ => {}
         }
 
@@ -1134,6 +1148,7 @@ impl App {
 
         if let AgentEvent::TurnComplete(ref tc) = envelope.event {
             self.state.token_usage += tc.usage;
+            self.turn_telemetry.record_cost(tc.cost);
             add_cost(&mut self.chats[chat_idx].cost, tc.cost);
             self.state
                 .session_mut()
@@ -1190,6 +1205,7 @@ impl App {
                 ChatEventResult::Done => {
                     self.status_bar.clear_flash();
                     self.terminalize_turn(MISSING_TOOL_COMPLETION);
+                    self.push_closure_block();
                     self.chat_index.clear();
                     self.subagent_answers.clear();
                     self.status = Status::Idle;
@@ -1638,6 +1654,21 @@ impl App {
             chat.fail_in_progress_with_message(message.into());
         }
         self.sync_task_picker();
+    }
+
+    /// Ends a run with a structural closure block, built from the telemetry
+    /// the run itself produced. Trivial turns get nothing.
+    fn push_closure_block(&mut self) {
+        let mut telemetry = std::mem::take(&mut self.turn_telemetry);
+        telemetry.finish();
+        if !telemetry.qualifies() {
+            return;
+        }
+        let text = telemetry.search_text();
+        self.main_chat().push(DisplayMessage::new(
+            DisplayRole::Closure(Box::new(telemetry)),
+            text,
+        ));
     }
 
     /// Marks unfinished subagent chats as ended and drops them from

@@ -30,6 +30,7 @@ pub(crate) mod subscription_usage;
 pub(crate) mod theme_picker;
 pub(crate) mod timing;
 pub(crate) mod tool_display;
+pub(crate) mod turn_telemetry;
 pub(crate) mod usage_modal;
 
 use std::sync::Arc;
@@ -42,6 +43,7 @@ use maki_agent::{BufferSnapshot, ToolInput, ToolOutput};
 use maki_providers::{Message, ModelTier};
 use ratatui::text::{Line, Span};
 use timing::ToolTiming;
+use turn_telemetry::TurnTelemetry;
 
 pub(crate) const CHEVRON: &str = "❯ ";
 
@@ -362,6 +364,7 @@ pub enum DisplayRole {
     Tool(Box<ToolRole>),
     Error,
     Done,
+    Closure(Box<TurnTelemetry>),
 }
 
 impl DisplayRole {

@@ -3,6 +3,7 @@ use crate::agent::shared_queue;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{Bind, KeybindContext, key as kb};
+use crate::components::marker::State;
 use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
@@ -4250,4 +4251,82 @@ fn turn_end_keeps_only_the_subagents_that_finished() {
         .map(|sa| sa.tool_use_id.as_str())
         .collect();
     assert_eq!(ids, [FINISHED_TASK_ID]);
+}
+
+// --- Turn telemetry closure block ---
+
+const CLOSURE_PATH: &str = "src/lib.rs";
+const CLOSURE_TOOL_ID: &str = "c1";
+
+fn edit_done(id: &str) -> AgentEvent {
+    AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+        id: id.into(),
+        tool: "edit".into(),
+        output: ToolOutput::Diff {
+            path: CLOSURE_PATH.into(),
+            before: "a\n".into(),
+            after: "b\n".into(),
+            summary: String::new(),
+        },
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    }))
+}
+
+fn plain_done(id: &str, tool: &str, is_error: bool) -> AgentEvent {
+    AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+        id: id.into(),
+        tool: tool.into(),
+        output: ToolOutput::Plain(String::new().into()),
+        is_error,
+        annotation: None,
+        written_path: None,
+    }))
+}
+
+fn run_tool(app: &mut App, id: &str, tool: &str, done: AgentEvent) {
+    app.update(agent_msg(tool_start(id, tool)));
+    app.update(agent_msg(done));
+}
+
+#[test_case(true,  true  ; "an_edit_closes_the_run")]
+#[test_case(false, false ; "a_single_read_stays_quiet")]
+fn closure_block_only_after_a_qualifying_run(edited: bool, expect_closure: bool) {
+    let mut app = streaming_app();
+    if edited {
+        run_tool(&mut app, CLOSURE_TOOL_ID, "edit", edit_done(CLOSURE_TOOL_ID));
+    } else {
+        run_tool(
+            &mut app,
+            CLOSURE_TOOL_ID,
+            "read",
+            plain_done(CLOSURE_TOOL_ID, "read", false),
+        );
+    }
+    app.update(done_event());
+    let closed = matches!(
+        app.chats[0].last_message_role(),
+        Some(DisplayRole::Closure(_))
+    );
+    assert_eq!(closed, expect_closure);
+}
+
+#[test]
+fn closure_block_names_changed_files_and_failed_commands() {
+    const FAILED_ID: &str = "b1";
+    let mut app = streaming_app();
+    run_tool(&mut app, CLOSURE_TOOL_ID, "edit", edit_done(CLOSURE_TOOL_ID));
+    run_tool(
+        &mut app,
+        FAILED_ID,
+        "bash",
+        plain_done(FAILED_ID, "bash", true),
+    );
+    app.update(done_event());
+
+    let text = app.chats[0].last_message_text();
+    assert!(text.contains(CLOSURE_PATH), "{text}");
+    assert!(text.contains(FAILED_ID), "{text}");
+    assert!(text.contains(State::Failed.label()), "{text}");
 }

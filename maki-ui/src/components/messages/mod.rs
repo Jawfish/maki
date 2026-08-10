@@ -1340,13 +1340,21 @@ impl MessagesPanel {
                         .push(Segment::with_lines(lines, search_text, Some(i)));
                     continue;
                 }
+                if let DisplayRole::Closure(telemetry) = &msg.role {
+                    let lines = telemetry.closure_lines();
+                    let search_text = telemetry.search_text();
+                    self.cache.push_spacing(SPACING_SECTION);
+                    self.cache
+                        .push(Segment::with_lines(lines, search_text, Some(i)));
+                    continue;
+                }
                 let style = match &msg.role {
                     DisplayRole::User => user_style(),
                     DisplayRole::Assistant => assistant_style(),
                     DisplayRole::Thinking => thinking_style(),
                     DisplayRole::Error => error_style(),
                     DisplayRole::Done => done_style(),
-                    DisplayRole::Tool(_) => unreachable!(),
+                    DisplayRole::Tool(_) | DisplayRole::Closure(_) => unreachable!(),
                 };
                 let prefix = if msg.plan_path.is_some() {
                     ""
