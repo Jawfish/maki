@@ -762,6 +762,12 @@ impl MessagesPanel {
             && self.streaming_text.is_empty()
     }
 
+    /// True once any tool output on screen has been cut short, which is the
+    /// only clue the user gets that there is more to read.
+    pub(crate) fn has_truncated_output(&self) -> bool {
+        self.messages.iter().any(|m| m.truncated_lines > 0)
+    }
+
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);

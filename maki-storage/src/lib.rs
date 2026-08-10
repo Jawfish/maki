@@ -4,6 +4,7 @@
 
 pub mod auth;
 pub mod checkpoints;
+pub mod hints;
 pub mod id;
 pub mod input_history;
 pub mod log;

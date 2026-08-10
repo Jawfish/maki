@@ -32,6 +32,7 @@ use crate::components::btw_modal::BtwModal;
 use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
 use crate::components::file_picker::{FilePickerModal, FilePickerModalAction};
 use crate::components::help_modal::HelpModal;
+use crate::components::hints::{Hints, Trigger};
 use crate::components::input::{InputAction, InputBox, Submission};
 use crate::components::keybindings::key;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
@@ -215,6 +216,7 @@ pub struct App {
     pub(super) restoring: Arc<AtomicBool>,
     pub(crate) workspace_checkpoints: WorkspaceCheckpoints,
     pub(super) onboarding: Onboarding,
+    pub(super) hints: Hints,
     subagent_answers: HashMap<String, flume::Sender<String>>,
 }
 
@@ -240,6 +242,7 @@ impl App {
     ) -> Self {
         scrollbar::set_enabled(ui_config.scrollbar);
         let onboarding = Onboarding::new(maki_storage::onboarding::take_first_run(&storage));
+        let hints = Hints::new(ui_config.hints, maki_storage::hints::dismissed(&storage));
         let state = SessionState::from_session(session, model, &storage);
         let typewriter = ui_config.typewriter_ms_per_char;
         let flash = ui_config.flash_duration();
@@ -320,6 +323,7 @@ impl App {
             restoring: Arc::new(AtomicBool::new(false)),
             workspace_checkpoints,
             onboarding,
+            hints,
             subagent_answers: HashMap::new(),
         };
         app.model_picker
@@ -355,6 +359,14 @@ impl App {
 
     pub(crate) fn flash(&mut self, msg: String) {
         self.status_bar.flash(msg);
+    }
+
+    /// Any key press retires the hint on screen, and the choice is kept so it
+    /// does not come back in a later session.
+    fn dismiss_hint(&mut self) {
+        if let Some(id) = self.hints.dismiss() {
+            maki_storage::hints::dismiss(&self.storage, id);
+        }
     }
 
     pub(crate) fn fire_session_autocmd(&self, event: &str, mut data: serde_json::Value) {
@@ -815,6 +827,7 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
         let key = normalize_key_event(key);
         self.clear_selection_unless_pending_copy();
+        self.dismiss_hint();
 
         if key::SUSPEND.matches(key) && cfg!(unix) {
             return vec![Action::Suspend];
@@ -943,6 +956,9 @@ impl App {
                                 self.open_rewind_picker()
                             }
                         } else {
+                            if !streaming {
+                                self.hints.fire(Trigger::IdleEsc);
+                            }
                             self.last_esc = Some(Instant::now());
                             self.status_bar.flash(
                                 if streaming {

@@ -242,6 +242,10 @@ impl Chat {
         self.messages_panel.is_blank()
     }
 
+    pub(crate) fn has_truncated_output(&self) -> bool {
+        self.messages_panel.has_truncated_output()
+    }
+
     pub fn scroll_top(&self) -> u16 {
         self.messages_panel.scroll_top()
     }

@@ -1,6 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::components::Overlay;
+use crate::components::hints::{HINT_ROWS, LONG_RUN_SECS, Trigger};
 #[cfg(test)]
 use crate::components::keybindings::KeybindContext;
 use crate::components::keybindings::display_label;
@@ -21,6 +22,7 @@ use super::{App, MAIN_CHAT, Mode, Status};
 
 struct ViewLayout {
     msg_area: Rect,
+    hint_area: Option<Rect>,
     task_area: Option<Rect>,
     bottom_area: Rect,
     status_area: Rect,
@@ -37,11 +39,13 @@ impl App {
 
         let form_visible = self.permission_prompt.is_open() || self.plan_form_active();
         let task_line = self.task_line();
+        self.fire_context_hints();
         let layout = self.compute_layout(frame.area(), form_visible, task_line.is_some());
         let render_chat = self.resolve_render_chat();
 
         self.render_background(frame);
         self.render_task_line(frame, &layout, task_line.as_ref());
+        self.render_hint(frame, &layout);
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
         self.render_splits(frame, &layout);
@@ -63,6 +67,22 @@ impl App {
             permission_pending: self.permission_prompt.is_awaiting(),
             retry: self.retry_info.as_ref(),
         })
+    }
+
+    /// Trigger points the user cannot ask about: output the renderer had to
+    /// cut, and a run long enough that waiting idle is a waste.
+    fn fire_context_hints(&mut self) {
+        if self.chats[MAIN_CHAT].has_truncated_output() {
+            self.hints.fire(Trigger::TruncatedOutput);
+        }
+        if self.status == Status::Streaming
+            && self
+                .turn_telemetry
+                .running_for()
+                .is_some_and(|elapsed| elapsed.as_secs() >= LONG_RUN_SECS)
+        {
+            self.hints.fire(Trigger::LongRun);
+        }
     }
 
     fn compute_layout(&self, area: Rect, form_visible: bool, task_line: bool) -> ViewLayout {
@@ -113,11 +133,21 @@ impl App {
 
         // The row is carved only while the line shows, so an idle history
         // never shifts under the user.
-        let (task_area, msg_area) = if task_line {
-            let [task, msg] =
+        let (task_area, chat_area) = if task_line {
+            let [task, rest] =
                 Layout::vertical([Constraint::Length(TASK_LINE_ROWS), Constraint::Min(1)])
                     .areas(chat_area);
-            (Some(task), msg)
+            (Some(task), rest)
+        } else {
+            (None, chat_area)
+        };
+
+        // The hint takes the row just above the input, so it reads next to
+        // what the user is about to do and never covers history it explains.
+        let (hint_area, msg_area) = if self.hints.is_active() && chat_area.height > HINT_ROWS {
+            let [msg, hint] = Layout::vertical([Constraint::Min(1), Constraint::Length(HINT_ROWS)])
+                .areas(chat_area);
+            (Some(hint), msg)
         } else {
             (None, chat_area)
         };
@@ -152,6 +182,7 @@ impl App {
         ViewLayout {
             msg_area,
             task_area,
+            hint_area,
             bottom_area,
             status_area,
             queue_area,
@@ -199,6 +230,12 @@ impl App {
             return;
         };
         frame.render_widget(Paragraph::new(task.line(area.width)), area);
+    }
+
+    fn render_hint(&mut self, frame: &mut Frame, layout: &ViewLayout) {
+        if let Some(area) = layout.hint_area {
+            self.hints.view(frame, area);
+        }
     }
 
     fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout) {

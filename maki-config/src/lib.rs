@@ -338,6 +338,7 @@ pub struct UiFileConfig {
     pub max_input_lines: Option<u32>,
     pub prose_width: Option<u32>,
     pub task_line: Option<bool>,
+    pub hints: Option<bool>,
 }
 
 impl UiFileConfig {
@@ -357,7 +358,8 @@ impl UiFileConfig {
             theme,
             max_input_lines,
             prose_width,
-            task_line
+            task_line,
+            hints
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
             (Some(base), Some(over)) => base.merge(over),
@@ -864,6 +866,12 @@ pub struct UiConfig {
 
     #[config(
         default = true,
+        desc = "Show a short tip the first time you hit something with a hidden key, like cut off tool output or a long run. Each tip names its key, appears once, and never returns after you move on"
+    )]
+    pub hints: bool,
+
+    #[config(
+        default = true,
         desc = "Send a desktop notification when a turn finishes or needs input while the terminal window is unfocused"
     )]
     pub notify: bool,
@@ -906,6 +914,7 @@ impl UiConfig {
             prose_width: f.prose_width.unwrap_or(DEFAULT_PROSE_WIDTH),
             show_thinking: f.show_thinking.unwrap_or(true),
             task_line: f.task_line.unwrap_or(true),
+            hints: f.hints.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
             notify_model: f.notify_model,
             polish_summaries: f.polish_summaries.unwrap_or(false),
