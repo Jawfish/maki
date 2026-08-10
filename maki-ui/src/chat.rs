@@ -238,6 +238,10 @@ impl Chat {
         self.messages_panel.view(frame, area, has_selection);
     }
 
+    pub(crate) fn is_blank(&self) -> bool {
+        self.messages_panel.is_blank()
+    }
+
     pub fn scroll_top(&self) -> u16 {
         self.messages_panel.scroll_top()
     }

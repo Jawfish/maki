@@ -17,7 +17,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-use super::{App, Mode, Status};
+use super::{App, MAIN_CHAT, Mode, Status};
 
 struct ViewLayout {
     msg_area: Rect,
@@ -183,6 +183,10 @@ impl App {
         self.chats[render_chat].set_accent(accent);
         self.chats[render_chat].set_spinner_animated(layout.task_area.is_none());
         self.chats[render_chat].view(frame, layout.msg_area, self.selection_state.is_some());
+        if render_chat == MAIN_CHAT {
+            let blank = self.chats[MAIN_CHAT].is_blank();
+            self.onboarding.view(frame, layout.msg_area, blank);
+        }
     }
 
     fn render_task_line(

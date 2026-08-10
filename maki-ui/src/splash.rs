@@ -1,4 +1,3 @@
-use crate::components::keybindings::key;
 use crate::theme::{self, lerp_u8};
 use crate::update;
 use ratatui::buffer::Buffer;
@@ -8,28 +7,12 @@ use std::time::Instant;
 
 const LOGO: &str = "maki";
 const TAGLINE: &str = "the efficient coder";
-const HELP_SEGMENTS: &[(&str, bool)] = &[
-    (key::HELP.label, true),
-    (" help", false),
-    (" · ", false),
-    ("/help", true),
-    (" in chat", false),
-];
-
-const TIPS: &[(&str, &str)] = &[
-    (
-        key::FILE_PICKER.label,
-        "to grab file paths with fuzzy search",
-    ),
-    (key::TASKS.label, "to see what your subagents are up to"),
-    (key::SEARCH.label, "to find things in the conversation"),
-    ("/btw", "to ask something without interrupting the session"),
-    ("/memory", "to view, edit, and delete persistent notes"),
-    ("/cd", "to switch to a different directory"),
-];
 
 const COLOR_TRANSITION_SECS: f32 = 0.4;
 
+/// Rows the logo block occupies, used to center it in the empty session.
+const BLOCK_ROWS: u16 = 4;
+const FIELD_OFFSET_SPREAD: u64 = 10_000;
 /// Seconds for the initial fade-in animation (ease-out cubic).
 const FADE_DURATION: f32 = 1.6;
 /// Seconds to wait before the logo starts appearing.
@@ -118,7 +101,6 @@ pub struct Splash {
     start: Instant,
     field_offset: f32,
     animate: bool,
-    tip_idx: usize,
 }
 
 impl Default for Splash {
@@ -131,12 +113,10 @@ impl Splash {
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();
-        let tip_idx = u32::from_le_bytes([rng[4], rng[5], rng[6], rng[7]]) as usize % TIPS.len();
         Self {
             start: Instant::now(),
-            field_offset: (u64::from_le_bytes(rng) % 10_000) as f32,
+            field_offset: (u64::from_le_bytes(rng) % FIELD_OFFSET_SPREAD) as f32,
             animate,
-            tip_idx,
         }
     }
 
@@ -153,19 +133,14 @@ impl Splash {
         };
 
         let new_version = update::latest_version();
-        let block_height = 8;
-        let top_y = area.y + area.height.saturating_sub(block_height) / 2;
+        let top_y = area.y + area.height.saturating_sub(BLOCK_ROWS) / 2;
         let tag_y = top_y + 1;
-        let help_y = tag_y + 2;
-        let tip_y = help_y + 2;
 
         if self.animate {
             self.render_field(area, buf, t + self.field_offset, fade, accent);
         }
         self.render_logo(area, buf, t, fade, top_y, accent);
         render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
-        self.render_help(area, buf, fade, help_y, accent);
-        self.render_tip(area, buf, fade, tip_y, accent);
         render_version(area, buf, fade, area.y, new_version);
     }
 
@@ -340,62 +315,6 @@ impl Splash {
         }
     }
 
-    fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f32, help_y: u16, accent: Color) {
-        if help_y >= area.y + area.height {
-            return;
-        }
-
-        let theme = theme::current();
-        let bg = theme.background;
-        let ac = extract_rgb(accent, (100, 140, 255));
-        let fg = extract_rgb(theme.foreground, (200, 200, 200));
-        let bg_rgb = extract_rgb(bg, (15, 15, 25));
-
-        let total_width: u16 = HELP_SEGMENTS.iter().map(|(s, _)| s.len() as u16).sum();
-        let x_start = area.x + area.width.saturating_sub(total_width) / 2;
-
-        let segments: Vec<_> = HELP_SEGMENTS
-            .iter()
-            .map(|&(text, highlighted)| {
-                let (target, alpha) = if highlighted { (ac, 0.75) } else { (fg, 0.5) };
-                (text, faded_style(bg_rgb, target, alpha * fade, bg))
-            })
-            .collect();
-
-        render_segments(area, buf, help_y, x_start, &segments);
-    }
-
-    fn render_tip(&self, area: Rect, buf: &mut Buffer, fade: f32, tip_y: u16, accent: Color) {
-        if tip_y >= area.y + area.height {
-            return;
-        }
-
-        let theme = theme::current();
-        let bg = theme.background;
-        let tip_rgb = extract_rgb(
-            theme.todo_in_progress.fg.unwrap_or(Color::Yellow),
-            (249, 226, 175),
-        );
-        let ac = extract_rgb(accent, (100, 140, 255));
-        let fg = extract_rgb(theme.foreground, (200, 200, 200));
-        let bg_rgb = extract_rgb(bg, (15, 15, 25));
-
-        let (label, desc) = TIPS[self.tip_idx];
-        let total_width = (5 + label.len() + 1 + desc.len()) as u16;
-        let x_start = area.x + area.width.saturating_sub(total_width) / 2;
-
-        let segments: &[(&str, Style)] = &[
-            (
-                "tip: ",
-                faded_style(bg_rgb, tip_rgb, 0.75 * fade, bg).add_modifier(Modifier::BOLD),
-            ),
-            (label, faded_style(bg_rgb, ac, 0.75 * fade, bg)),
-            (" ", Style::default()),
-            (desc, faded_style(bg_rgb, fg, 0.5 * fade, bg)),
-        ];
-
-        render_segments(area, buf, tip_y, x_start, segments);
-    }
 }
 
 fn render_version(area: Rect, buf: &mut Buffer, fade: f32, y: u16, new_version: Option<&str>) {

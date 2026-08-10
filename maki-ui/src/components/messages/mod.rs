@@ -746,7 +746,7 @@ impl MessagesPanel {
         self.in_progress_count() > 0
             || self.streaming_thinking.is_animating()
             || self.streaming_text.is_animating()
-            || self.show_idle_splash()
+            || self.is_blank()
             || self.accent.is_animating()
             || !self.live_bufs.is_empty()
             || self.streaming_thinking_collapsed()
@@ -756,7 +756,7 @@ impl MessagesPanel {
         self.thinking_collapsed && !self.streaming_thinking.is_empty()
     }
 
-    fn show_idle_splash(&self) -> bool {
+    pub(crate) fn is_blank(&self) -> bool {
         self.messages.is_empty()
             && self.streaming_thinking.is_empty()
             && self.streaming_text.is_empty()
@@ -776,7 +776,7 @@ impl MessagesPanel {
             self.rebake_stale_snapshots(theme_gen);
         }
 
-        if self.show_idle_splash() {
+        if self.is_blank() {
             let accent = self.accent.resolve();
             self.idle_splash.render(area, frame.buffer_mut(), accent);
             return;

@@ -38,6 +38,7 @@ use crate::components::login_picker::{LoginPicker, LoginPickerAction};
 use crate::components::lua_float::FloatManager;
 use crate::components::mcp_picker::{McpPicker, McpPickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
+use crate::components::onboarding::Onboarding;
 use crate::components::permission_prompt::PermissionPrompt;
 use crate::components::plan_form::{PlanForm, PlanFormAction};
 use crate::components::return_summary::{IDLE_GAP, SummaryBlock, polish, polish_model};
@@ -86,6 +87,7 @@ use session_state::SessionState;
 /// Bypasses the per-run staleness filter because re-bake replies
 /// don't belong to any real agent run.
 pub(crate) const RESTORE_RUN_ID: u64 = u64::MAX;
+pub(crate) const MAIN_CHAT: usize = 0;
 const FLASH_CANCEL: &str = "Press esc again to cancel...";
 const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
@@ -205,6 +207,7 @@ pub struct App {
     pub(crate) restore_event_tx: Option<maki_agent::EventSender>,
     pub(super) restoring: Arc<AtomicBool>,
     pub(crate) workspace_checkpoints: WorkspaceCheckpoints,
+    pub(super) onboarding: Onboarding,
     subagent_answers: HashMap<String, flume::Sender<String>>,
 }
 
@@ -229,6 +232,7 @@ impl App {
         subscription_usage: Arc<ArcSwap<SubscriptionUsage>>,
     ) -> Self {
         scrollbar::set_enabled(ui_config.scrollbar);
+        let onboarding = Onboarding::new(maki_storage::onboarding::take_first_run(&storage));
         let state = SessionState::from_session(session, model, &storage);
         let typewriter = ui_config.typewriter_ms_per_char;
         let flash = ui_config.flash_duration();
@@ -307,6 +311,7 @@ impl App {
             restore_event_tx: None,
             restoring: Arc::new(AtomicBool::new(false)),
             workspace_checkpoints,
+            onboarding,
             subagent_answers: HashMap::new(),
         };
         app.model_picker

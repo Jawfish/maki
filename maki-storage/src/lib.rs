@@ -8,6 +8,7 @@ pub mod id;
 pub mod input_history;
 pub mod log;
 pub mod model;
+pub mod onboarding;
 pub mod paths;
 pub mod plans;
 pub mod sessions;
