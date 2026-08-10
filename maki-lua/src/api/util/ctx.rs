@@ -11,7 +11,9 @@ use maki_agent::tools::{
 };
 use maki_config::{AgentConfig, ToolOutputLines};
 use maki_storage::id::SessionRef;
-use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue};
+use mlua::{
+    LuaSerdeExt, MultiValue, Table as LuaTable, UserData, UserDataMethods, Value as LuaValue,
+};
 
 use crate::api::tool::ToolCallReply;
 use crate::api::ui::buf::BufHandle;
@@ -20,6 +22,8 @@ use crate::api::util::pair::Pair;
 use crate::runtime::{active_task, lock_cell};
 
 const DEADLINE_ALREADY_SET_MSG: &str = "ctx:set_deadline() already called";
+const SECTION_OP_ERROR: &str =
+    "apply_hashline_edits: each section needs exactly one of `patch` or `delete = true`";
 
 fn send_live_buf(lua: &mlua::Lua, buf: &mlua::AnyUserData) -> mlua::Result<()> {
     let shared = buf.borrow::<BufHandle>().map(|h| Arc::clone(&h.buf))?;
@@ -344,35 +348,46 @@ impl UserData for LuaCtx {
 
         methods.add_async_method(
             "apply_hashline_edits",
-            |lua, this, sections: LuaValue| async move {
+            |lua, this, sections: Vec<LuaTable>| async move {
                 let Some(agent) = this.agent() else {
                     return Ok(this.cap_err_pair("apply_hashline_edits"));
                 };
-                let sections: Vec<Vec<String>> = lua.from_value(sections)?;
-                if sections.iter().any(|section| section.len() != 3) {
-                    return Err(mlua::Error::runtime(
-                        "apply_hashline_edits: each section requires path, tag, and patch",
-                    ));
+                let mut parsed = Vec::with_capacity(sections.len());
+                for section in &sections {
+                    let path: String = section.get("path")?;
+                    let tag: String = section.get("tag")?;
+                    let patch: Option<String> = section.get("patch")?;
+                    let delete: Option<bool> = section.get("delete")?;
+                    if patch.is_some() == delete.unwrap_or(false) {
+                        return Err(mlua::Error::runtime(SECTION_OP_ERROR));
+                    }
+                    parsed.push((path, tag, patch));
                 }
-                let sections = sections
+                let sections = parsed
                     .iter()
-                    .map(|section| EditSection {
-                        path: Path::new(&section[0]),
-                        tag: &section[1],
-                        patch: &section[2],
+                    .map(|(path, tag, patch)| match patch {
+                        Some(patch) => EditSection::patch(Path::new(path), tag, patch),
+                        None => EditSection::delete(Path::new(path), tag),
                     })
                     .collect::<Vec<_>>();
                 match agent.hashline.edit_sections(&sections).await {
                     Ok(edits) => {
                         let results = lua.create_table()?;
                         for (index, edit) in edits.into_iter().enumerate() {
-                            agent.file_tracker.record_read(&edit.path);
                             let result = lua.create_table()?;
                             result.set("path", edit.path.to_string_lossy().as_ref())?;
-                            result.set("tag", edit.snapshot.tag)?;
+                            result.set("removed", edit.snapshot.is_none())?;
+                            match edit.snapshot {
+                                Some(snapshot) => {
+                                    agent.file_tracker.record_read(&edit.path);
+                                    result.set("tag", snapshot.tag)?;
+                                }
+                                None => agent.file_tracker.forget(&edit.path),
+                            }
                             result.set("before", edit.before.as_ref())?;
                             result.set("after", edit.after.as_ref())?;
                             result.set("warning", edit.warning)?;
+                            result.set("ops", edit.ops)?;
                             results.set(index + 1, result)?;
                         }
                         Ok((Some(results), None))

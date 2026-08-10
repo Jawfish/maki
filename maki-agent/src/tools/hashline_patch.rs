@@ -124,6 +124,17 @@ pub fn parse_patch(patch: &str) -> Result<Vec<Edit>, PatchError> {
     for (index, row) in patch.lines().enumerate() {
         let patch_line = index + 1;
         if let Some(body) = row.strip_prefix('+') {
+            let body = if let Some(literal) = body.strip_prefix('\\') {
+                literal
+            } else {
+                if parse_header(body, patch_line).is_ok() {
+                    return Err(PatchError::new(
+                        patch_line,
+                        "patch directive is prefixed with `+` and would be inserted as text; remove the leading `+` to start a new operation, or use `+\\` to insert it literally",
+                    ));
+                }
+                body
+            };
             let edit = pending.as_mut().ok_or_else(|| {
                 PatchError::new(patch_line, "body row has no preceding `PUT` header")
             })?;
@@ -549,10 +560,33 @@ mod tests {
     #[test_case("CUT 2*:\n+x", 1, "must not end with `:`"; "block_cut_with_colon")]
     #[test_case("CUT 2*\n+x", 2, "does not accept `+TEXT`"; "block_cut_with_body")]
     #[test_case("PUT >2*:", 1, "needs at least one `+TEXT`"; "empty_block_insert_after")]
+    #[test_case(
+        "PUT 1.=1:\n+replacement\n+PUT 2.=2:\n+second",
+        3,
+        "directive is prefixed with `+`";
+        "put_header_cannot_be_body_text"
+    )]
+    #[test_case(
+        "PUT 1.=1:\n+replacement\n+CUT 2.=2",
+        3,
+        "directive is prefixed with `+`";
+        "cut_header_cannot_be_body_text"
+    )]
     fn rejects_malformed_patch(patch: &str, line: usize, rule: &str) {
         let error = parse_patch(patch).unwrap_err();
         assert_eq!(error.line(), line);
         assert!(error.to_string().contains(rule), "{error}");
+    }
+
+    #[test_case("PUT is ordinary prose"; "put_like_prose")]
+    #[test_case("CUTTING text"; "cut_like_prose")]
+    #[test_case("\\PUT 2.=2:"; "escaped_put_header")]
+    fn directive_like_prose_remains_literal(body: &str) {
+        let expected = body.strip_prefix('\\').unwrap_or(body);
+        assert_eq!(
+            apply("old\n", &format!("PUT 1.=1:\n+{body}")),
+            format!("{expected}\n")
+        );
     }
 
     #[test_case("one\ntwo", "PUT 2.=3:\n+x", 1, "out of bounds"; "replace_endpoint")]

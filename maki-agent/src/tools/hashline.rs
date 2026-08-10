@@ -24,10 +24,18 @@ const VERIFY_DIFF_GUIDANCE: &str = "verify the diff matches your intent";
 const STABLE_DRIFT_WARNING: &str =
     "warning: stale file drift detected; head/tail-only inserts remain position-stable";
 const INVALID_TAG_ERROR: &str = "invalid revision tag: expected exactly 16 lowercase ASCII hex characters; use a tag from read or the previous edit result";
+const DESCRIBED_OPS_LIMIT: usize = 3;
+const BODY_PREVIEW_CHARS: usize = 48;
+const TRUNCATION_WARNING_PREFIX: &str = "warning: possible truncated payload";
+const TRUNCATED_PAYLOAD_GUIDANCE: &str = "if that is fewer operations than you sent, the payload was truncated in transit -- resend it, splitting the operations across separate calls";
+const NON_UTF8_ERROR: &str = "non-utf8 content; re-read cannot proceed";
+const STALE_DELETE_ERROR: &str = "stale tag: the file changed since that revision, so the delete was refused; re-read the file and retry with its fresh tag";
+const REMOVE_OPS: usize = 1;
 
 pub type ContentTag = String;
 
 type AtomicWriter = dyn Fn(&Path, &[u8]) -> Result<(), String> + Send + Sync;
+type FileRemover = dyn Fn(&Path) -> Result<(), String> + Send + Sync;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TextFormat {
@@ -68,23 +76,56 @@ pub struct EditResult {
     pub path: PathBuf,
     pub before: Arc<str>,
     pub after: Arc<str>,
-    pub snapshot: Snapshot,
+    /// `None` when the section removed the file, because a deleted path has no
+    /// revision left to hand back.
+    pub snapshot: Option<Snapshot>,
     pub warning: Option<String>,
+    /// Number of operations the parser found in the received patch. Reported
+    /// back so a caller can compare it against the number it believes it sent:
+    /// a mismatch means the payload was truncated or mangled in transit, which
+    /// is otherwise invisible because the surviving fragment applies cleanly.
+    pub ops: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SectionOp<'a> {
+    Patch(&'a str),
+    Delete,
 }
 
 pub struct EditSection<'a> {
     pub path: &'a Path,
     pub tag: &'a str,
-    pub patch: &'a str,
+    pub op: SectionOp<'a>,
+}
+
+impl<'a> EditSection<'a> {
+    pub fn patch(path: &'a Path, tag: &'a str, patch: &'a str) -> Self {
+        Self {
+            path,
+            tag,
+            op: SectionOp::Patch(patch),
+        }
+    }
+
+    pub fn delete(path: &'a Path, tag: &'a str) -> Self {
+        Self {
+            path,
+            tag,
+            op: SectionOp::Delete,
+        }
+    }
 }
 
 struct PreflightEdit {
     path: PathBuf,
     before_bytes: Vec<u8>,
     before: String,
-    after: String,
+    /// `None` removes the file instead of writing new content.
+    after: Option<String>,
     format: TextFormat,
     warning: Option<String>,
+    ops: usize,
 }
 
 #[derive(Debug)]
@@ -123,6 +164,7 @@ pub struct HashlineState {
     max_versions_per_path: usize,
     max_total_bytes: usize,
     writer: Arc<AtomicWriter>,
+    remover: Arc<FileRemover>,
 }
 
 impl Default for HashlineState {
@@ -146,6 +188,7 @@ impl HashlineState {
             writer: Arc::new(|path, bytes| {
                 maki_storage::atomic_write(path, bytes).map_err(|error| error.to_string())
             }),
+            remover: Arc::new(|path| fs::remove_file(path).map_err(|error| error.to_string())),
         }
     }
 
@@ -153,6 +196,15 @@ impl HashlineState {
     fn with_writer(writer: Arc<AtomicWriter>) -> Self {
         Self {
             writer,
+            ..Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_hooks(writer: Arc<AtomicWriter>, remover: Arc<FileRemover>) -> Self {
+        Self {
+            writer,
+            remover,
             ..Self::new()
         }
     }
@@ -240,7 +292,13 @@ impl HashlineState {
     }
 
     pub async fn edit(&self, path: &Path, tag: &str, patch: &str) -> Result<EditResult, String> {
-        self.edit_sections(&[EditSection { path, tag, patch }])
+        self.edit_sections(&[EditSection::patch(path, tag, patch)])
+            .await
+            .map(|mut results| results.remove(0))
+    }
+
+    pub async fn remove(&self, path: &Path, tag: &str) -> Result<EditResult, String> {
+        self.edit_sections(&[EditSection::delete(path, tag)])
             .await
             .map(|mut results| results.remove(0))
     }
@@ -272,7 +330,7 @@ impl HashlineState {
             .find_map(|paths| (paths[0] == paths[1]).then(|| paths[0].as_path()))
         {
             return Err(format!(
-                "duplicate canonical path {}; merge its operations into one section",
+                "duplicate canonical path {}; combine the sections by concatenating their original `PUT`/`CUT` operations without prefixing headers with `+`",
                 duplicate.display()
             ));
         }
@@ -296,12 +354,22 @@ impl HashlineState {
         }
 
         let writer = Arc::clone(&self.writer);
+        let remover = Arc::clone(&self.remover);
         let mut committed: Vec<usize> = Vec::with_capacity(preflight.len());
         for (index, edit) in preflight.iter().enumerate() {
             let path = edit.path.clone();
-            let bytes = edit.format.restore(&edit.after).into_bytes();
-            let commit_writer = Arc::clone(&writer);
-            if let Err(error) = smol::unblock(move || commit_writer(&path, &bytes)).await {
+            let commit = match &edit.after {
+                Some(after) => {
+                    let bytes = edit.format.restore(after).into_bytes();
+                    let commit_writer = Arc::clone(&writer);
+                    smol::unblock(move || commit_writer(&path, &bytes)).await
+                }
+                None => {
+                    let commit_remover = Arc::clone(&remover);
+                    smol::unblock(move || commit_remover(&path)).await
+                }
+            };
+            if let Err(error) = commit {
                 let mut rollback_errors = Vec::new();
                 for landed in committed.iter().rev().map(|&landed| &preflight[landed]) {
                     let path = landed.path.clone();
@@ -333,13 +401,24 @@ impl HashlineState {
             .into_iter()
             .map(|edit| {
                 self.clear_no_op_attempt(&edit.path);
-                let snapshot = self.record_normalized(&edit.path, edit.after.clone(), edit.format);
+                let (after, snapshot) = match edit.after {
+                    Some(after) => {
+                        let snapshot =
+                            self.record_normalized(&edit.path, after.clone(), edit.format);
+                        (after, Some(snapshot))
+                    }
+                    None => {
+                        self.forget(&edit.path);
+                        (String::new(), None)
+                    }
+                };
                 EditResult {
                     path: edit.path,
                     before: Arc::from(edit.before),
-                    after: Arc::from(edit.after),
+                    after: Arc::from(after),
                     snapshot,
                     warning: edit.warning,
+                    ops: edit.ops,
                 }
             })
             .collect();
@@ -349,15 +428,51 @@ impl HashlineState {
 
     fn preflight(&self, section: &EditSection<'_>) -> Result<PreflightEdit, String> {
         let path = canonical_path(section.path);
-        let edits = parse_patch(section.patch).map_err(|error| error.to_string())?;
-        let snapshot = self.get(&path, section.tag);
-        let before_bytes = fs::read(&path).map_err(|error| format!("read error: {error}"))?;
-        let current = String::from_utf8(before_bytes.clone())
-            .map_err(|_| "non-utf8 content; re-read cannot proceed".to_owned())?;
+        match section.op {
+            SectionOp::Patch(patch) => self.preflight_patch(path, section.tag, patch),
+            SectionOp::Delete => self.preflight_delete(path, section.tag),
+        }
+    }
+
+    fn read_normalized(path: &Path) -> Result<(Vec<u8>, String, TextFormat), String> {
+        let before_bytes = fs::read(path).map_err(|error| format!("read error: {error}"))?;
+        let current =
+            String::from_utf8(before_bytes.clone()).map_err(|_| NON_UTF8_ERROR.to_owned())?;
         let (before, format) = normalize(&current);
+        Ok((before_bytes, before, format))
+    }
+
+    /// A delete never remaps: the tag must hash the bytes on disk right now, so
+    /// the caller cannot remove a file whose current contents it never saw.
+    fn preflight_delete(&self, path: PathBuf, tag: &str) -> Result<PreflightEdit, String> {
+        let (before_bytes, before, format) = Self::read_normalized(&path)?;
+        if content_tag(&before) != tag {
+            self.record_normalized(&path, before.clone(), format);
+            return Err(STALE_DELETE_ERROR.to_owned());
+        }
+        Ok(PreflightEdit {
+            path,
+            before_bytes,
+            before,
+            after: None,
+            format,
+            warning: None,
+            ops: REMOVE_OPS,
+        })
+    }
+
+    fn preflight_patch(
+        &self,
+        path: PathBuf,
+        tag: &str,
+        patch: &str,
+    ) -> Result<PreflightEdit, String> {
+        let edits = parse_patch(patch).map_err(|error| error.to_string())?;
+        let snapshot = self.get(&path, tag);
+        let (before_bytes, before, format) = Self::read_normalized(&path)?;
         let current_tag = content_tag(&before);
         let is_stale = snapshot.as_ref().is_none_or(|snapshot| {
-            current_tag != section.tag || before.as_str() != snapshot.content.as_ref()
+            current_tag != tag || before.as_str() != snapshot.content.as_ref()
         });
         let (edits, warning) = if is_stale {
             let remapped = snapshot
@@ -367,7 +482,7 @@ impl HashlineState {
                 let rejection = remapped.and_then(Result::err);
                 self.record_normalized(&path, before.clone(), format);
                 return Err(stale_error(
-                    section.tag,
+                    tag,
                     &current_tag,
                     &before,
                     &edits,
@@ -382,15 +497,17 @@ impl HashlineState {
         let byte_edits = lower_edits(&before, &path, &edits)?;
         let after = apply_byte_edits(&before, byte_edits)?;
         if after == before {
-            return Err(self.no_op_error(&path, section.tag, section.patch));
+            return Err(self.no_op_error(&path, tag, patch, &edits));
         }
+        let warning = merge_warnings(warning, truncation_warning(&before, &edits));
         Ok(PreflightEdit {
             path,
             before_bytes,
             before,
-            after,
+            after: Some(after),
             format,
             warning,
+            ops: edits.len(),
         })
     }
 
@@ -425,7 +542,7 @@ impl HashlineState {
         })
     }
 
-    fn no_op_error(&self, path: &Path, tag: &str, patch: &str) -> String {
+    fn no_op_error(&self, path: &Path, tag: &str, patch: &str, edits: &[Edit]) -> String {
         let path_key = canonical_path(path);
         let mut attempts = self
             .no_op_attempts
@@ -447,14 +564,19 @@ impl HashlineState {
                 count: 1,
             };
         }
+        // Echo the shape of what actually arrived. A no-op is usually either a
+        // patch that restates the file, or a payload that lost operations in
+        // transit -- and those need opposite responses, so the caller cannot be
+        // left to guess which one it is.
+        let received = describe_received(edits);
         if attempt.count >= NO_OP_LOOP_LIMIT {
             format!(
-                "hard failure: no-op edit loop for {}: the same payload made no changes {NO_OP_LOOP_LIMIT} times; stop retrying it and inspect the current file",
+                "hard failure: no-op edit loop for {}: the same payload made no changes {NO_OP_LOOP_LIMIT} times; stop retrying it and inspect the current file. {received}",
                 path_key.display()
             )
         } else {
             format!(
-                "patch makes no changes to {} (identical no-op attempt {}/{}); do not retry this payload: use a different patch or inspect the current file",
+                "patch makes no changes to {} (identical no-op attempt {}/{}); do not retry this payload: use a different patch or inspect the current file. {received}; {TRUNCATED_PAYLOAD_GUIDANCE}",
                 path_key.display(),
                 attempt.count,
                 NO_OP_LOOP_LIMIT
@@ -467,6 +589,20 @@ impl HashlineState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&canonical_path(path));
+    }
+
+    /// Drop every stored revision for a path once it is gone, so a later
+    /// recreate cannot match a tag from the deleted file's history.
+    fn forget(&self, path: &Path) {
+        let path = canonical_path(path);
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(versions) = store.paths.remove(&path) {
+            let freed = versions
+                .iter()
+                .map(|stored| stored.snapshot.content.len())
+                .sum::<usize>();
+            store.total_bytes -= freed;
+        }
     }
 
     fn evict_to_byte_limit(&self, store: &mut SnapshotStore) {
@@ -635,6 +771,110 @@ fn content_lines(content: &str) -> Vec<&str> {
             .unwrap_or(content)
             .split('\n')
             .collect()
+    }
+}
+
+/// Compact description of the operations the parser actually found, for error
+/// text. The caller knows what it meant to send; the only thing it cannot see
+/// is what arrived.
+fn describe_received(edits: &[Edit]) -> String {
+    let ops = edits.len();
+    let plural = if ops == 1 { "" } else { "s" };
+    let detail = edits
+        .iter()
+        .take(DESCRIBED_OPS_LIMIT)
+        .map(describe_edit)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let elided = ops.saturating_sub(DESCRIBED_OPS_LIMIT);
+    if elided == 0 {
+        format!("received {ops} operation{plural}: {detail}")
+    } else {
+        format!("received {ops} operation{plural}: {detail}, +{elided} more")
+    }
+}
+
+fn describe_edit(edit: &Edit) -> String {
+    match edit {
+        Edit::Replace {
+            start, end, lines, ..
+        } => format!("PUT {start}.={end} <- {}", describe_body(lines)),
+        Edit::ReplaceBlock { line, lines, .. } => {
+            format!("PUT {line}* <- {}", describe_body(lines))
+        }
+        Edit::InsertBefore { line, lines, .. } => {
+            format!("PUT <{line} <- {}", describe_body(lines))
+        }
+        Edit::InsertAfter { line, lines, .. } => {
+            format!("PUT >{line} <- {}", describe_body(lines))
+        }
+        Edit::InsertAfterBlock { line, lines, .. } => {
+            format!("PUT >{line}* <- {}", describe_body(lines))
+        }
+        Edit::InsertHead { lines, .. } => format!("PUT <1 <- {}", describe_body(lines)),
+        Edit::InsertTail { lines, .. } => format!("PUT >$ <- {}", describe_body(lines)),
+        Edit::Cut { start, end, .. } => format!("CUT {start}.={end}"),
+        Edit::CutBlock { line, .. } => format!("CUT {line}*"),
+    }
+}
+
+fn describe_body(lines: &[String]) -> String {
+    let count = lines.len();
+    let plural = if count == 1 { "" } else { "s" };
+    match lines.first() {
+        Some(first) => format!("{count} line{plural} starting {}", quote_elided(first)),
+        None => format!("{count} line{plural}"),
+    }
+}
+
+fn quote_elided(line: &str) -> String {
+    let mut taken = line.chars().take(BODY_PREVIEW_CHARS).collect::<String>();
+    if line.chars().count() > BODY_PREVIEW_CHARS {
+        taken.push('…');
+    }
+    format!("{taken:?}")
+}
+
+/// Detect the signature of a payload truncated mid-body: a range of several
+/// lines replaced by a single line that is a strict, shorter prefix of the
+/// first line it replaced. Such a patch applies cleanly and reports success,
+/// so nothing else in the pipeline would ever question it.
+fn truncation_warning(before: &str, edits: &[Edit]) -> Option<String> {
+    let lines = content_lines(before);
+    let suspects = edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Edit::Replace {
+                start,
+                end,
+                lines: body,
+                ..
+            } if end > start => {
+                let [replacement] = body.as_slice() else {
+                    return None;
+                };
+                let original = lines.get(start.checked_sub(1)?)?;
+                let truncated = replacement.len() < original.len()
+                    && original.starts_with(replacement.as_str())
+                    && !replacement.trim().is_empty();
+                truncated.then(|| format!("{start}.={end}"))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if suspects.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{TRUNCATION_WARNING_PREFIX}: {} collapsed to a single line that is a prefix of the line it replaced; if the payload lost text in transit, re-send it, otherwise ignore this",
+        suspects.join(", ")
+    ))
+}
+
+fn merge_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
+        (first, second) => first.or(second),
     }
 }
 
@@ -1120,16 +1360,8 @@ mod tests {
             }));
             let first_tag = state.record(&first, "one\n").tag;
             let sections = [
-                EditSection {
-                    path: &first,
-                    tag: &first_tag,
-                    patch: "not a patch",
-                },
-                EditSection {
-                    path: &second,
-                    tag: "0123456789ABCDEf",
-                    patch: "PUT 1.=1:\n+changed",
-                },
+                EditSection::patch(&first, &first_tag, "not a patch"),
+                EditSection::patch(&second, "0123456789ABCDEf", "PUT 1.=1:\n+changed"),
             ];
 
             let error = state.edit_sections(&sections).await.unwrap_err();
@@ -1313,13 +1545,13 @@ mod tests {
                 .await
                 .unwrap();
             let second = state
-                .edit(&path, &first.snapshot.tag, "PUT >2:\n+three")
+                .edit(&path, &first.snapshot.unwrap().tag, "PUT >2:\n+three")
                 .await
                 .unwrap();
             assert_eq!(&*second.after, "one\nsecond\nthree\n");
 
             let error = state
-                .edit(&path, &second.snapshot.tag, "PUT 2.=2:\n+second")
+                .edit(&path, &second.snapshot.unwrap().tag, "PUT 2.=2:\n+second")
                 .await
                 .unwrap_err();
             assert!(error.contains("no changes"), "got: {error}");
@@ -1359,6 +1591,87 @@ mod tests {
                 changed.contains("identical no-op attempt 1/3"),
                 "got: {changed}"
             );
+        });
+    }
+
+    #[test]
+    fn no_op_error_echoes_the_operations_that_arrived() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\ntwo\n").unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, "one\ntwo\n").tag;
+
+            let error = state
+                .edit(&path, &tag, "PUT 2.=2:\n+two")
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("received 1 operation: PUT 2.=2 <- 1 line starting \"two\""),
+                "got: {error}"
+            );
+            assert!(error.contains(TRUNCATED_PAYLOAD_GUIDANCE), "got: {error}");
+        });
+    }
+
+    #[test]
+    fn result_reports_operation_count_for_the_caller_to_check() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            fs::write(&path, "one\ntwo\nthree\n").unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, "one\ntwo\nthree\n").tag;
+
+            let result = state
+                .edit(&path, &tag, "PUT 1.=1:\n+first\nPUT 3.=3:\n+third")
+                .await
+                .unwrap();
+            assert_eq!(result.ops, 2);
+            assert_eq!(&*result.after, "first\ntwo\nthird\n");
+            assert_eq!(result.warning, None);
+        });
+    }
+
+    #[test]
+    fn collapsing_a_range_to_a_prefix_of_its_first_line_warns_about_truncation() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let before = "a paragraph, with more after the comma\nsecond line\nthird line\n";
+            fs::write(&path, before).unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, before).tag;
+
+            let result = state
+                .edit(&path, &tag, "PUT 1.=3:\n+a paragraph")
+                .await
+                .unwrap();
+            let warning = result.warning.unwrap();
+            assert!(
+                warning.contains(TRUNCATION_WARNING_PREFIX),
+                "got: {warning}"
+            );
+            assert!(warning.contains("1.=3"), "got: {warning}");
+        });
+    }
+
+    #[test]
+    fn deliberate_shortening_that_is_not_a_prefix_does_not_warn() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("file");
+            let before = "a paragraph, with more after the comma\nsecond line\nthird line\n";
+            fs::write(&path, before).unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, before).tag;
+
+            let result = state
+                .edit(&path, &tag, "PUT 1.=3:\n+something else entirely")
+                .await
+                .unwrap();
+            assert_eq!(result.warning, None);
         });
     }
 
@@ -1413,7 +1726,7 @@ mod tests {
                     "warning: stale line anchors remapped: 2→3; verify the diff matches your intent"
                 )
             );
-            assert_eq!(result.snapshot.tag, content_tag(&result.after));
+            assert_eq!(result.snapshot.unwrap().tag, content_tag(&result.after));
             assert_eq!(fs::read_to_string(path).unwrap(), &*result.after);
         });
     }
@@ -1495,7 +1808,10 @@ mod tests {
 
             assert_eq!(&*result.after, "one\nchanged\nthree\nexternal\n");
             assert_eq!(fs::read_to_string(&path).unwrap(), &*result.after);
-            assert_eq!(result.snapshot.tag, content_tag(&result.after));
+            assert_eq!(
+                result.snapshot.as_ref().unwrap().tag,
+                content_tag(&result.after)
+            );
             assert_eq!(
                 result.warning.as_deref(),
                 Some(
@@ -1554,7 +1870,7 @@ mod tests {
 
             assert_eq!(&*result.after, "head\nchanged\ntwo\nexternal\ntail\n");
             assert_eq!(result.warning.as_deref(), Some(STABLE_DRIFT_WARNING));
-            assert_eq!(result.snapshot.tag, content_tag(&result.after));
+            assert_eq!(result.snapshot.unwrap().tag, content_tag(&result.after));
         });
     }
 
@@ -1618,11 +1934,7 @@ mod tests {
             let sections = paths
                 .iter()
                 .zip(&tags)
-                .map(|(path, tag)| EditSection {
-                    path,
-                    tag,
-                    patch: "PUT 1.=1:\n+changed",
-                })
+                .map(|(path, tag)| EditSection::patch(path, tag, "PUT 1.=1:\n+changed"))
                 .collect::<Vec<_>>();
 
             let error = state.edit_sections(&sections).await.unwrap_err();
@@ -1657,16 +1969,8 @@ mod tests {
             let second_tag = state.record(&second, "two\n").tag;
             fs::write(&second, "changed\n").unwrap();
             let stale = [
-                EditSection {
-                    path: &first,
-                    tag: &first_tag,
-                    patch: "PUT 1.=1:\n+first",
-                },
-                EditSection {
-                    path: &second,
-                    tag: &second_tag,
-                    patch: "PUT 1.=1:\n+second",
-                },
+                EditSection::patch(&first, &first_tag, "PUT 1.=1:\n+first"),
+                EditSection::patch(&second, &second_tag, "PUT 1.=1:\n+second"),
             ];
 
             let error = state.edit_sections(&stale).await.unwrap_err();
@@ -1687,32 +1991,16 @@ mod tests {
             #[cfg(not(unix))]
             let alias = first.clone();
             let duplicate = [
-                EditSection {
-                    path: &first,
-                    tag: &first_tag,
-                    patch: "PUT 1.=1:\n+first",
-                },
-                EditSection {
-                    path: &alias,
-                    tag: &first_tag,
-                    patch: "PUT 1.=1:\n+alias",
-                },
+                EditSection::patch(&first, &first_tag, "PUT 1.=1:\n+first"),
+                EditSection::patch(&alias, &first_tag, "PUT 1.=1:\n+alias"),
             ];
             let error = state.edit_sections(&duplicate).await.unwrap_err();
             assert!(error.contains("duplicate canonical path"), "got: {error}");
             assert!(error.contains("merge"), "got: {error}");
 
             let malformed = [
-                EditSection {
-                    path: &first,
-                    tag: &first_tag,
-                    patch: "PUT 1.=1:\n+first",
-                },
-                EditSection {
-                    path: &second,
-                    tag: &second_tag,
-                    patch: "not a patch",
-                },
+                EditSection::patch(&first, &first_tag, "PUT 1.=1:\n+first"),
+                EditSection::patch(&second, &second_tag, "not a patch"),
             ];
             let error = state.edit_sections(&malformed).await.unwrap_err();
             assert!(error.contains("section 2"), "got: {error}");
@@ -1796,7 +2084,7 @@ mod tests {
             let mixed = state
                 .edit(
                     &path,
-                    &replaced.snapshot.tag,
+                    &replaced.snapshot.unwrap().tag,
                     "CUT 3*\nPUT >7*:\n+fn four() {}\nPUT <1:\n+// header",
                 )
                 .await
@@ -1846,16 +2134,8 @@ mod tests {
                     .record(&second, str::from_utf8(second_bytes).unwrap())
                     .tag;
                 let sections = [
-                    EditSection {
-                        path: &first,
-                        tag: &first_tag,
-                        patch: "PUT >$:\n+landed",
-                    },
-                    EditSection {
-                        path: &second,
-                        tag: &second_tag,
-                        patch,
-                    },
+                    EditSection::patch(&first, &first_tag, "PUT >$:\n+landed"),
+                    EditSection::patch(&second, &second_tag, patch),
                 ];
 
                 let error = state.edit_sections(&sections).await.unwrap_err();
@@ -1919,6 +2199,134 @@ mod tests {
                 fs::read_to_string(&path).unwrap(),
                 "\u{feff}fn changed() {}\r\nfn second() {}\r\n"
             );
+        });
+    }
+
+    #[test]
+    fn delete_removes_the_file_and_forgets_its_revisions() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("doomed");
+            fs::write(&path, "one\ntwo\n").unwrap();
+            let state = HashlineState::new();
+            let tag = state.record(&path, "one\ntwo\n").tag;
+
+            let result = state.remove(&path, &tag).await.unwrap();
+
+            assert!(!path.exists());
+            assert_eq!(result.snapshot, None);
+            assert_eq!(&*result.before, "one\ntwo\n");
+            assert_eq!(&*result.after, "");
+            assert_eq!(result.ops, REMOVE_OPS);
+            assert_eq!(state.get(&path, &tag), None);
+        });
+    }
+
+    #[test]
+    fn delete_refuses_a_tag_that_does_not_hash_the_current_bytes() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("moving");
+            fs::write(&path, "one\n").unwrap();
+            let state = HashlineState::new();
+            let stale_tag = state.record(&path, "one\n").tag;
+            fs::write(&path, "one\ntwo\n").unwrap();
+
+            let error = state.remove(&path, &stale_tag).await.unwrap_err();
+
+            assert!(error.contains(STALE_DELETE_ERROR), "got: {error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+        });
+    }
+
+    #[test]
+    fn delete_never_hands_back_the_fresh_tag_it_refused() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("moving");
+            fs::write(&path, "one\n").unwrap();
+            let state = HashlineState::new();
+            let stale_tag = state.record(&path, "one\n").tag;
+            fs::write(&path, "one\ntwo\n").unwrap();
+
+            let error = state.remove(&path, &stale_tag).await.unwrap_err();
+
+            assert!(
+                !error.contains(&content_tag("one\ntwo\n")),
+                "error leaked the fresh tag, which would let a delete skip the re-read: {error}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_delete_rolls_back_the_sections_that_already_landed() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let patched = dir.path().join("patched");
+            let doomed = dir.path().join("doomed");
+            fs::write(&patched, "one\n").unwrap();
+            fs::write(&doomed, "two\n").unwrap();
+            let state = HashlineState::with_hooks(
+                Arc::new(|path, bytes| fs::write(path, bytes).map_err(|error| error.to_string())),
+                Arc::new(|_| Err("injected remove failure".into())),
+            );
+            let patched_tag = state.record(&patched, "one\n").tag;
+            let doomed_tag = state.record(&doomed, "two\n").tag;
+            let sections = [
+                EditSection::patch(&patched, &patched_tag, "PUT 1.=1:\n+changed"),
+                EditSection::delete(&doomed, &doomed_tag),
+            ];
+
+            let error = state.edit_sections(&sections).await.unwrap_err();
+
+            assert!(error.contains("injected remove failure"), "got: {error}");
+            assert!(
+                error.contains("rolled back 1 landed section(s)"),
+                "got: {error}"
+            );
+            assert_eq!(fs::read_to_string(&patched).unwrap(), "one\n");
+            assert_eq!(fs::read_to_string(&doomed).unwrap(), "two\n");
+        });
+    }
+
+    #[test]
+    fn a_delete_and_a_patch_commit_as_one_batch() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let patched = dir.path().join("patched");
+            let doomed = dir.path().join("doomed");
+            fs::write(&patched, "one\n").unwrap();
+            fs::write(&doomed, "two\n").unwrap();
+            let state = HashlineState::new();
+            let patched_tag = state.record(&patched, "one\n").tag;
+            let doomed_tag = state.record(&doomed, "two\n").tag;
+            let sections = [
+                EditSection::patch(&patched, &patched_tag, "PUT 1.=1:\n+changed"),
+                EditSection::delete(&doomed, &doomed_tag),
+            ];
+
+            let results = state.edit_sections(&sections).await.unwrap();
+
+            assert_eq!(fs::read_to_string(&patched).unwrap(), "changed\n");
+            assert!(!doomed.exists());
+            assert!(results[0].snapshot.is_some());
+            assert_eq!(results[1].snapshot, None);
+        });
+    }
+
+    #[test]
+    fn deleting_a_missing_file_reports_the_read_error() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("absent");
+            let state = HashlineState::new();
+
+            let error = state
+                .remove(&path, &content_tag("gone\n"))
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("read error"), "got: {error}");
         });
     }
 }

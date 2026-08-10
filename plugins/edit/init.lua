@@ -5,6 +5,8 @@ local replace_lines = require("edit_helpers").replace_lines
 
 local SNIPPET_MAX_CHARS = 32
 local FALLBACK_VIEW_LINES = 10
+local SECTION_OP_ERROR = "each section needs exactly one of `patch` or `delete = true`"
+local SECTION_TAG_ERROR = "sections for the same path must use the same tag"
 
 local EDIT_LINES_DESCRIPTION =
   [[Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete a range. Do not use with the batch tool.]]
@@ -24,7 +26,7 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 local HASHLINE_DESCRIPTION =
   [[Edit one or more revision-tagged files as one batch with strict line and syntax-block operations.
 
-Pass `sections`, each with an existing file's absolute `path`, the 16-character `tag` from `read` or the previous `edit` result, and `patch`. Use `write` for new files. Tags and numbered content use normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF. Writes preserve the detected file format. All sections are validated before writing; commit failures trigger a rollback attempt. Operations in each patch use that tagged file's original line numbers, so earlier operations do not shift later anchors.
+Pass `sections`, each with an existing file's absolute `path`, the 16-character `tag` from `read` or the previous `edit` result, and either a `patch` or `delete = true`. Use `write` for new files. Tags and numbered content use normalized text: an initial UTF-8 BOM is stripped and CRLF becomes LF. Writes preserve the detected file format. All sections are validated before writing; commit failures trigger a rollback attempt. Operations in each patch use that tagged file's original line numbers, so earlier operations do not shift later anchors.
 
 Grammar:
 - Replace inclusive range: `PUT N.=M:` deletes original lines N through M and replaces them with `+TEXT` rows. The body is final content; its length is irrelevant.
@@ -40,11 +42,16 @@ Block rules:
 - Unsupported or ambiguous blocks fail without writing; numeric operations remain available.
 - Block targets never remap when stale. Re-read the file, then re-author the patch with its fresh tag and numbering.
 
+Removing a file:
+- `{ path, tag, delete = true }` with no `patch` deletes the file. One section is either a patch or a delete, never both.
+- The tag must match the file's current contents exactly; deletes never remap, so re-read the file first if it drifted.
+
 Rules:
 - Every body row starts with `+`; everything after that first `+` is literal content. Use `+` alone for a blank line.
 - Copy indentation after `+`. Do not include read's `N: ` line-number prefix.
 - Use the smallest exact range. A replacement range contains only lines meant to disappear. For pure additions, use `PUT <N:` or `PUT >N:`; never replace an adjacent line.
 - On success, use the returned tag for the next edit. On other stale failures, use its fresh tag and numbered anchor window to re-author the patch. Never retry an unchanged no-op payload.
+- Success reports the operation count and line delta that landed. Check it against what you sent: a lower count means the payload was truncated in transit, so re-send the missing operations as separate calls rather than assuming the edit is complete.
 
 Wrong:
 `PUT 4.=8:\n old context\n-new\n+new` (diff/context rows are invalid)
@@ -72,8 +79,12 @@ Prefer this over edit when making multiple changes to the same file.
 local function edit_header(input)
   local buf = maki.ui.buf()
   local paths = {}
-  for _, section in ipairs(input.sections or {}) do
-    paths[#paths + 1] = shorten_path(section.path or "")
+  if input.path then
+    paths[1] = shorten_path(input.path)
+  else
+    for _, section in ipairs(input.sections or {}) do
+      paths[#paths + 1] = shorten_path(section.path or "")
+    end
   end
   buf:line({ { table.concat(paths, ", "), "path" } })
   return buf
@@ -85,6 +96,43 @@ local function split_lines(text)
     lines[#lines] = nil
   end
   return lines
+end
+
+-- What actually landed, in one line. The tag alone cannot tell the caller
+-- whether the patch it sent arrived intact: a payload that loses operations or
+-- gets cut mid-body still applies cleanly and still returns a fresh tag. An
+-- operation count and a line delta make that visible at a glance.
+local function applied_summary(result)
+  local ops = result.ops or 0
+  local before = #split_lines(result.before)
+  local after = #split_lines(result.after)
+  local delta = after - before
+  local sign = delta >= 0 and "+" or ""
+  return string.format(
+    "%d op%s, %d line%s -> %d (%s%d)",
+    ops,
+    ops == 1 and "" or "s",
+    before,
+    before == 1 and "" or "s",
+    after,
+    sign,
+    delta
+  )
+end
+
+local function diff_count(before, after)
+  local before_lines = split_lines(before)
+  local after_lines = split_lines(after)
+  local shared = math.min(#before_lines, #after_lines)
+  local removed = #before_lines - shared
+  local added = #after_lines - shared
+  for i = 1, shared do
+    if before_lines[i] ~= after_lines[i] then
+      removed = removed + 1
+      added = added + 1
+    end
+  end
+  return string.format("+%d -%d", added, removed)
 end
 
 local function edit_view_opts(ctx)
@@ -266,6 +314,7 @@ end
 local function diff_result(edit_result, summary)
   return {
     llm_output = summary,
+    annotation = diff_count(edit_result.before, edit_result.after),
     diff_path = edit_result.path,
     diff_before = edit_result.before,
     diff_after = edit_result.after,
@@ -309,16 +358,20 @@ register_tool_if(opts.hashline_edit, {
         required = true,
         items = {
           type = "object",
-          required = { "path", "tag", "patch" },
-          properties = {
-            path = { type = "string", description = "Absolute path to the file" },
-            tag = {
-              type = "string",
-              pattern = "^[0-9a-f]{16}$",
-              description = "Exactly 16 lowercase hex characters from read or the previous edit result",
+            required = { "path", "tag" },
+            properties = {
+              path = { type = "string", description = "Absolute path to the file" },
+              tag = {
+                type = "string",
+                pattern = "^[0-9a-f]{16}$",
+                description = "Exactly 16 lowercase hex characters from read or the previous edit result",
+              },
+              patch = { type = "string", description = "Hashline PUT/CUT operations against the tagged revision" },
+              delete = {
+                type = "boolean",
+                description = "Remove the file instead of patching it; omit `patch` when set",
+              },
             },
-            patch = { type = "string", description = "Hashline PUT/CUT operations against the tagged revision" },
-          },
         },
       },
     },
@@ -327,8 +380,31 @@ register_tool_if(opts.hashline_edit, {
   header = edit_header,
   handler = function(input, ctx)
     local sections = {}
+    local section_by_path = {}
     for _, section in ipairs(input.sections) do
-      sections[#sections + 1] = { maki.fs.abspath(section.path), section.tag, section.patch }
+      if (section.patch ~= nil) == (section.delete == true) then
+        return { llm_output = SECTION_OP_ERROR, is_error = true }
+      end
+      local path = maki.fs.abspath(section.path)
+      local existing = section_by_path[path]
+      if existing then
+        if existing.tag ~= section.tag then
+          return { llm_output = SECTION_TAG_ERROR, is_error = true }
+        end
+        if existing.patch == nil or section.patch == nil then
+          return { llm_output = SECTION_OP_ERROR, is_error = true }
+        end
+        existing.patch = existing.patch .. "\n" .. section.patch
+      else
+        existing = {
+          path = path,
+          tag = section.tag,
+          patch = section.patch,
+          delete = section.delete,
+        }
+        sections[#sections + 1] = existing
+        section_by_path[path] = existing
+      end
     end
     local results, err = ctx:apply_hashline_edits(sections)
     if not results then
@@ -336,17 +412,34 @@ register_tool_if(opts.hashline_edit, {
     end
     local summaries = {}
     for _, result in ipairs(results) do
-      local summary = "edited " .. result.path .. "\ntag: " .. result.tag
+      local summary
+      if result.removed then
+        summary = "removed " .. result.path .. " (" .. #split_lines(result.before) .. " lines)"
+      else
+        summary = "edited "
+          .. result.path
+          .. " ("
+          .. applied_summary(result)
+          .. ")\ntag: "
+          .. result.tag
+      end
       if result.warning then
         summary = summary .. "\n" .. result.warning
       end
       summaries[#summaries + 1] = summary
     end
-    local response = { llm_output = table.concat(summaries, "\n") }
+    local counts = {}
+    for _, result in ipairs(results) do
+      counts[#counts + 1] = diff_count(result.before, result.after)
+    end
+    local response = {
+      llm_output = table.concat(summaries, "\n"),
+      annotation = table.concat(counts, ", "),
+    }
     response.diff_path = results[1].path
     response.diff_before = results[1].before
     response.diff_after = results[1].after
-    if #results == 1 then
+    if #results == 1 and not results[1].removed then
       response.written_path = results[1].path
     end
     return response

@@ -64,6 +64,12 @@ impl FileReadTracker {
         }
         Ok(())
     }
+
+    /// Drop a deleted path so a later recreate is not compared against the
+    /// mtime of the file that used to live there.
+    pub fn forget(&self, path: &Path) {
+        self.0.lock().unwrap().remove(&normalize_path(path));
+    }
 }
 
 #[cfg(test)]

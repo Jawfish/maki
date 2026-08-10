@@ -4047,9 +4047,11 @@ mod read_tool_required_params {
             panic!("edit should return a diff");
         };
         assert_eq!(result_path, std::fs::canonicalize(&path).unwrap());
+        // The applied summary is part of the contract: it is how a caller
+        // notices that the patch it sent arrived with operations missing.
         assert_eq!(
             summary.lines().next().unwrap(),
-            format!("edited {result_path}")
+            format!("edited {result_path} (1 op, 2 lines -> 2 (+0))")
         );
         assert_eq!(before, "one\ntwo\n");
         assert_eq!(after, "one\nsecond\n");
@@ -4069,6 +4071,70 @@ mod read_tool_required_params {
             std::fs::read_to_string(path).unwrap(),
             "one\nsecond\nthree\n"
         );
+    }
+
+    #[test]
+    fn hashline_delete_removes_the_file_and_reports_it() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doomed.txt");
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+        let read = exec_with_ctx(
+            &reg,
+            "read",
+            serde_json::json!({ "path": path, "offset": 1, "limit": 10 }),
+            &ctx,
+        )
+        .unwrap();
+        let tag = read
+            .lines()
+            .find_map(|line| {
+                line.split_once('#')
+                    .map(|(_, rest)| rest.trim_end_matches(']'))
+            })
+            .expect("read should return a tag")
+            .to_owned();
+
+        let output = exec_output_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "sections": [{ "path": path, "tag": tag, "delete": true }] }),
+            &ctx,
+        )
+        .unwrap();
+
+        let summary = match &output {
+            maki_agent::ToolOutput::Diff { summary, .. } => summary.clone(),
+            other => panic!("delete should return a diff, got {other:?}"),
+        };
+        assert!(summary.starts_with("removed "), "summary: {summary}");
+        assert!(!path.exists(), "file should be gone");
+    }
+
+    #[test]
+    fn hashline_section_rejects_both_patch_and_delete() {
+        let (reg, _host) = builtins_host();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
+
+        let error = exec_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "sections": [{
+                "path": path,
+                "tag": "0000000000000000",
+                "patch": "CUT 1.=1",
+                "delete": true
+            }] }),
+            &ctx,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("exactly one of"), "error: {error}");
+        assert!(path.exists(), "file must survive a rejected section");
     }
 
     #[test]
@@ -4134,7 +4200,7 @@ mod read_tool_required_params {
         );
 
         let tag = ctx.hashline.record(&first, "one\nchanged\n").tag;
-        let error = exec_with_ctx(
+        let output = exec_output_with_ctx(
             &reg,
             "edit",
             serde_json::json!({ "sections": [
@@ -4143,9 +4209,26 @@ mod read_tool_required_params {
             ] }),
             &ctx,
         )
+        .unwrap();
+        let maki_agent::ToolOutput::Diff { summary, .. } = output else {
+            panic!("duplicate sections should return a diff")
+        };
+        assert!(summary.contains("2 ops"), "got: {summary}");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first\nsecond\n");
+        let error = exec_with_ctx(
+            &reg,
+            "edit",
+            serde_json::json!({ "sections": [{
+                "path": first,
+                "tag": tag,
+                "patch": "PUT 1.=1:\n+first\n+PUT 2.=2:\n+second"
+            }] }),
+            &ctx,
+        )
         .unwrap_err();
-        assert!(error.contains("duplicate canonical path"), "got: {error}");
-        assert!(error.contains("merge"), "got: {error}");
+        assert!(error.contains("patch line 3"), "got: {error}");
+        assert!(error.contains("prefixed with `+`"), "got: {error}");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first\nsecond\n");
     }
 
     #[test]
