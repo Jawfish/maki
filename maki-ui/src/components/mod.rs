@@ -401,6 +401,30 @@ pub(crate) fn test_model() -> maki_providers::Model {
     }
 }
 
+/// Rendering tests assert on tool body content, which the shipped one-line
+/// default hides. These are the caps the display tests were written against.
+#[cfg(test)]
+pub(crate) const TEST_TOOL_OUTPUT_LINES: maki_config::ToolOutputLines =
+    maki_config::ToolOutputLines {
+        bash: 5,
+        code_execution: 5,
+        task: 5,
+        index: 3,
+        grep: 3,
+        read: 3,
+        write: 7,
+        web: 3,
+        other: 3,
+    };
+
+#[cfg(test)]
+pub(crate) fn test_ui_config() -> maki_config::UiConfig {
+    maki_config::UiConfig {
+        tool_output_lines: TEST_TOOL_OUTPUT_LINES,
+        ..maki_config::UiConfig::default()
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent {

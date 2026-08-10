@@ -759,7 +759,7 @@ pub fn build_instructions_lines(
 mod tests {
     use super::*;
 
-    const TOL: ToolOutputLines = ToolOutputLines::DEFAULT;
+    const TOL: ToolOutputLines = crate::components::TEST_TOOL_OUTPUT_LINES;
     use crate::components::{DisplayRole, ToolRole};
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::tools::{BASH_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME};
@@ -1713,6 +1713,7 @@ mod tests {
 
     #[test]
     fn default_span_resolves_to_theme_tool() {
+        let _guard = theme::test_guard();
         theme::set(theme::load_by_name("dracula").expect("dracula theme"));
         assert_eq!(
             resolve_span_style(&SpanStyle::Default),
