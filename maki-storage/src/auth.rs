@@ -119,7 +119,9 @@ pub fn load_mcp_auth(dir: &StateDir, server_name: &str, expected_url: &str) -> O
     if data.server_url != expected_url {
         return None;
     }
+    // RFC 7591: `client_secret_expires_at` of 0 means the secret never expires.
     if let Some(expires_at) = data.client_secret_expires_at
+        && expires_at != 0
         && now_millis() / 1000 >= expires_at
     {
         return None;
@@ -254,5 +256,18 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         save_mcp_auth(&dir, "srv", &data).unwrap();
         assert!(load_mcp_auth(&dir, "srv", lookup_url).is_none());
+    }
+
+    #[test]
+    fn mcp_auth_load_keeps_non_expiring_client_secret() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let data = McpAuthData {
+            client_secret: Some("s".into()),
+            client_secret_expires_at: Some(0),
+            ..test_mcp_data()
+        };
+        save_mcp_auth(&dir, "srv", &data).unwrap();
+        assert!(load_mcp_auth(&dir, "srv", TEST_URL).is_some());
     }
 }
