@@ -3,6 +3,7 @@ use super::{DisplayMessage, ToolStatus};
 use super::code_view;
 use crate::animation::spinner_str;
 use crate::components::marker::State;
+use crate::components::timing::{self, ToolTiming};
 use crate::theme;
 use code_view::RenderLimits;
 use code_view::SectionFlags;
@@ -38,6 +39,7 @@ pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
 const CODE_OUTPUT_DIVIDER: &str = "  ────────────";
+const DURATION_GAP: &str = " ";
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -108,11 +110,33 @@ pub struct ToolLines {
     pub search_text: String,
     pub highlight: Option<HighlightRequest>,
     pub spinner_lines: Vec<(usize, usize)>,
+    /// Header stamp of a still-running tool, refreshed on every redraw so the
+    /// elapsed time ticks without rebuilding the whole segment.
+    pub elapsed_stamp: Option<ElapsedStamp>,
     /// Index of the first live-buffer snapshot line, recorded in the same
     /// pass that lays out `lines`, so click rows can never drift from them.
     pub snapshot_base: Option<usize>,
     pub content_indent: &'static str,
     pub truncation: SectionFlags,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElapsedStamp {
+    pub line: usize,
+    pub span: usize,
+    pub started_at: Instant,
+}
+
+impl ElapsedStamp {
+    pub fn span(&self) -> Span<'static> {
+        Span::styled(
+            format!(
+                "{}{DURATION_GAP}",
+                timing::format_duration(self.started_at.elapsed())
+            ),
+            theme::current().tool_dim,
+        )
+    }
 }
 
 pub struct HighlightRequest {
@@ -288,6 +312,7 @@ struct ToolLineBuilder {
     lines: Vec<Line<'static>>,
     search_text: String,
     spinner_lines: Vec<(usize, usize)>,
+    elapsed_stamp: Option<ElapsedStamp>,
     snapshot_base: Option<usize>,
     content_range: (usize, usize),
     width: u16,
@@ -303,6 +328,7 @@ impl ToolLineBuilder {
             lines: Vec::new(),
             search_text: String::new(),
             spinner_lines: Vec::new(),
+            elapsed_stamp: None,
             snapshot_base: None,
             content_range: (0, 0),
             width,
@@ -359,7 +385,12 @@ impl ToolLineBuilder {
         self.search_text.push_str(text);
     }
 
-    fn prepend_indicator(&mut self, state: State, started_at: Instant) {
+    fn prepend_indicator(
+        &mut self,
+        state: State,
+        started_at: Instant,
+        timing: Option<&ToolTiming>,
+    ) {
         if self.lines.is_empty() {
             return;
         }
@@ -367,17 +398,32 @@ impl ToolLineBuilder {
             State::Failed => format!("{} ", state.label()),
             _ => state.glyph_text(started_at.elapsed().as_millis()),
         };
+        let running = state == State::Running;
+        let mut prefix = vec![Span::styled(text, state.style())];
+        if let Some(label) = timing.and_then(|t| t.label(running)) {
+            if running && let Some(start) = timing.and_then(ToolTiming::start) {
+                self.elapsed_stamp = Some(ElapsedStamp {
+                    line: 0,
+                    span: prefix.len(),
+                    started_at: start,
+                });
+            }
+            prefix.push(Span::styled(
+                format!("{label}{DURATION_GAP}"),
+                theme::current().tool_dim,
+            ));
+        }
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {
-                *span += 1;
+                *span += prefix.len();
             }
         }
-        if state == State::Running {
+        if running {
             self.spinner_lines.push((0, 0));
         }
-        self.lines[0]
-            .spans
-            .insert(0, Span::styled(text, state.style()));
+        for (i, span) in prefix.into_iter().enumerate() {
+            self.lines[0].spans.insert(i, span);
+        }
     }
 
     fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
@@ -485,6 +531,7 @@ impl ToolLineBuilder {
             search_text: self.search_text,
             highlight,
             spinner_lines: self.spinner_lines,
+            elapsed_stamp: self.elapsed_stamp,
             snapshot_base: self.snapshot_base,
             content_indent,
             truncation: self.truncation,
@@ -601,7 +648,7 @@ pub fn build_tool_lines(
         msg.annotation.as_deref(),
         msg.render_header.as_ref(),
     );
-    b.prepend_indicator(status.into(), rctx.started_at);
+    b.prepend_indicator(status.into(), rctx.started_at, msg.role.tool_timing());
     let has_snapshot = msg.render_snapshot.is_some();
     if output_limit == 1
         && !expanded.any()
@@ -704,7 +751,7 @@ pub fn build_instructions_lines(
     };
     let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
     b.push_header("load", header, annotation.as_deref(), None);
-    b.prepend_indicator(State::Done, Instant::now());
+    b.prepend_indicator(State::Done, Instant::now(), None);
 
     let start = b.lines.len();
     let has_truncation =
@@ -738,6 +785,7 @@ mod tests {
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::tools::{BASH_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME};
     use maki_agent::{SnapshotLine, SnapshotSpan, TextOutput, ToolInput, ToolOutput};
+    use std::time::Duration;
     use test_case::test_case;
 
     fn test_rctx(width: u16) -> RenderCtx<'static> {
@@ -796,6 +844,7 @@ mod tests {
                 id: "t1".into(),
                 status,
                 name: BASH_TOOL_NAME.into(),
+                timing: ToolTiming::default(),
             })),
             text: text.into(),
             tool_input: input.map(Arc::new),
@@ -849,6 +898,61 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    const DURATION_MILLIS: u64 = 1_234;
+    const DURATION_LABEL: &str = "1.2s";
+    const RUNNING_SECS: u64 = 45;
+    const RUNNING_LABEL: &str = "45s";
+
+    fn timed_msg(status: ToolStatus, timing: ToolTiming) -> DisplayMessage {
+        let mut msg = bash_msg("header", status, None, None);
+        if let DisplayRole::Tool(t) = &mut msg.role {
+            t.timing = timing;
+        }
+        msg
+    }
+
+    #[test_case(
+        ToolStatus::Success,
+        ToolTiming::restored(DURATION_MILLIS),
+        DURATION_LABEL
+        ; "done_keeps_final_duration"
+    )]
+    #[test_case(
+        ToolStatus::Error,
+        ToolTiming::restored(DURATION_MILLIS),
+        DURATION_LABEL
+        ; "failed_keeps_final_duration"
+    )]
+    #[test_case(
+        ToolStatus::InProgress,
+        ToolTiming::from_start(Instant::now() - Duration::from_secs(RUNNING_SECS)),
+        RUNNING_LABEL
+        ; "running_shows_elapsed"
+    )]
+    fn header_stamps_duration_after_the_marker(
+        status: ToolStatus,
+        timing: ToolTiming,
+        expected: &str,
+    ) {
+        let msg = timed_msg(status, timing);
+        let tl = build_tool_lines(&msg, status, &test_rctx(80), SectionFlags::default());
+        let stamp = &tl.lines[0].spans[1];
+        assert_eq!(stamp.content.as_ref(), format!("{expected}{DURATION_GAP}"));
+        assert_eq!(stamp.style, theme::current().tool_dim);
+    }
+
+    #[test]
+    fn untimed_tool_header_has_no_duration_stamp() {
+        let msg = timed_msg(ToolStatus::Success, ToolTiming::default());
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        assert!(!lines_text(&tl).contains(DURATION_LABEL));
     }
 
     #[test_case(ToolStatus::InProgress, None           ; "live_streaming_shows_body")]
@@ -934,6 +1038,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: TASK_TOOL_NAME.into(),
+                timing: ToolTiming::default(),
             })),
             text: "Find auth".into(),
             tool_input: None,
@@ -1029,6 +1134,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: "index".into(),
+                timing: ToolTiming::default(),
             })),
             text: format!("src/lib.rs\n{body}"),
             tool_input: None,
@@ -1069,6 +1175,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: "index".into(),
+                timing: ToolTiming::default(),
             })),
             text: "src/lib.rs\nplain fallback".into(),
             tool_input: None,
@@ -1197,6 +1304,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Error,
                 name: "code_execution".into(),
+                timing: ToolTiming::default(),
             })),
             text: "2 lines".into(),
             tool_output: Some(Arc::new(ToolOutput::Plain(output.into()))),
@@ -1382,6 +1490,7 @@ mod tests {
                 id: "t1".into(),
                 status,
                 name: BASH_TOOL_NAME.into(),
+                timing: ToolTiming::default(),
             })),
             text,
             tool_input: None,
@@ -1477,6 +1586,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: READ_TOOL_NAME.into(),
+                timing: ToolTiming::default(),
             })),
             text: "read /src/main.rs".into(),
             tool_input: None,
@@ -1593,6 +1703,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: "index".into(),
+                timing: ToolTiming::default(),
             })),
             text: "src/lib.rs\nbody_text_here".into(),
             tool_input: None,
@@ -1632,6 +1743,7 @@ mod tests {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: "index".into(),
+                timing: ToolTiming::default(),
             })),
             text: "header\nbody_fallback".into(),
             tool_input: None,

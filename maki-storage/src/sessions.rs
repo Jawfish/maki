@@ -176,6 +176,9 @@ pub struct Session<M, U, T> {
     pub token_usage: U,
     #[serde(default = "HashMap::new")]
     tool_outputs: HashMap<String, Arc<T>>,
+    /// Wall-clock milliseconds each tool call took, keyed like `tool_outputs`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    tool_durations: HashMap<String, u64>,
     #[serde(default = "HashMap::new", skip_serializing_if = "HashMap::is_empty")]
     subagent_messages: HashMap<String, Arc<Vec<M>>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -435,7 +438,12 @@ enum LogRecord<M, U, T> {
     #[serde(rename = "msg")]
     Msg { d: M },
     #[serde(rename = "out")]
-    Out { id: String, d: T },
+    Out {
+        id: String,
+        d: T,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ms: Option<u64>,
+    },
     #[serde(rename = "sub_msg")]
     SubMsg { sub: String, d: M },
     #[serde(rename = "meta")]
@@ -552,6 +560,7 @@ impl SessionLog {
                     &LogRecord::<&M, &U, &T>::Out {
                         id: id.clone(),
                         d: output,
+                        ms: session.tool_durations.get(id).copied(),
                     },
                 )?;
                 new_tool_ids.push(id.clone());
@@ -721,6 +730,7 @@ where
             &LogRecord::<&M, &U, &T>::Out {
                 id: id.clone(),
                 d: output,
+                ms: session.tool_durations.get(id).copied(),
             },
         )?;
     }
@@ -772,6 +782,7 @@ where
     let mut created_at = 0u64;
     let mut messages: Vec<M> = Vec::new();
     let mut tool_outputs = HashMap::new();
+    let mut tool_durations = HashMap::new();
     let mut subagent_messages: HashMap<String, Vec<M>> = HashMap::new();
     let mut title = DEFAULT_TITLE.to_string();
     let mut token_usage = U::default();
@@ -829,7 +840,10 @@ where
                 got_header = true;
             }
             LogRecord::Msg { d } => messages.push(d),
-            LogRecord::Out { id: out_id, d } => {
+            LogRecord::Out { id: out_id, d, ms } => {
+                if let Some(ms) = ms {
+                    tool_durations.insert(out_id.clone(), ms);
+                }
                 tool_outputs.insert(out_id, Arc::new(d));
             }
             LogRecord::SubMsg { sub, d } => {
@@ -864,6 +878,7 @@ where
         messages: Arc::new(messages),
         token_usage,
         tool_outputs,
+        tool_durations,
         subagent_messages: subagent_messages
             .into_iter()
             .map(|(id, msgs)| (id, Arc::new(msgs)))
@@ -1193,6 +1208,7 @@ where
             messages: Arc::default(),
             token_usage: U::default(),
             tool_outputs: HashMap::new(),
+            tool_durations: HashMap::new(),
             subagent_messages: HashMap::new(),
             subagents: Vec::new(),
             usage_by_model: HashMap::new(),
@@ -1218,6 +1234,10 @@ where
 
     pub fn tool_outputs(&self) -> &HashMap<String, Arc<T>> {
         &self.tool_outputs
+    }
+
+    pub fn tool_durations(&self) -> &HashMap<String, u64> {
+        &self.tool_durations
     }
 
     pub fn subagent_messages(&self) -> &HashMap<String, Arc<Vec<M>>> {
@@ -1308,7 +1328,10 @@ where
 
     /// A change under an existing id is not expressible as an append, so it
     /// voids the cursors; a new id is a pure append.
-    pub fn insert_tool_output(&mut self, id: String, output: T) {
+    pub fn insert_tool_output(&mut self, id: String, output: T, duration_millis: Option<u64>) {
+        if let Some(millis) = duration_millis {
+            self.tool_durations.insert(id.clone(), millis);
+        }
         if self.tool_outputs.insert(id, Arc::new(output)).is_some() {
             self.rewrite();
         } else {
@@ -1411,6 +1434,7 @@ where
             .chain(main_ids)
             .collect();
         self.tool_outputs.retain(|id, _| live.contains(id));
+        self.tool_durations.retain(|id, _| live.contains(id));
         self.rewrite();
     }
 
@@ -1534,6 +1558,9 @@ mod tests {
     const LEGACY_HEX_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
     const TAMPERED_TITLE: &str = "tampered cached title";
     const PENDING_DRAFT: &str = "half typed thought";
+    const TIMED_TOOL_ID: &str = "tool-timed";
+    const UNTIMED_TOOL_ID: &str = "tool-untimed";
+    const TOOL_DURATION_MILLIS: u64 = 1_234;
 
     impl TitleSource for Value {
         fn first_user_text(&self) -> Option<&str> {
@@ -1601,7 +1628,7 @@ mod tests {
             .insert("task-stale".into(), Arc::new(vec!["stale-sub-tool".into()]));
         session.set_subagents(vec![subagent("task-live"), subagent("task-stale")]);
         for id in ["task-live", "sub-tool", "stale-sub-tool", "orphan"] {
-            session.insert_tool_output(id.into(), Value::Null);
+            session.insert_tool_output(id.into(), Value::Null, None);
         }
 
         session.prune_orphans(ids);
@@ -1720,6 +1747,28 @@ mod tests {
         assert_same_session(&reloaded, &loaded);
         assert_eq!(reloaded.subagents(), loaded.subagents());
         assert_eq!(reloaded.usage_by_model(), loaded.usage_by_model());
+    }
+
+    #[test]
+    fn tool_durations_survive_save_and_load() {
+        let tmp = TempDir::new().unwrap();
+        let mut session: TestSession = Session::new("m", "/project");
+        let id = session.id;
+        session.push_message(user_message("first"));
+        session.insert_tool_output(
+            TIMED_TOOL_ID.into(),
+            Value::from("out"),
+            Some(TOOL_DURATION_MILLIS),
+        );
+        session.insert_tool_output(UNTIMED_TOOL_ID.into(), Value::from("out"), None);
+        session.save_to(tmp.path()).unwrap();
+
+        let loaded = TestSession::load_from(id, tmp.path()).unwrap();
+        assert_eq!(
+            loaded.tool_durations().get(TIMED_TOOL_ID),
+            Some(&TOOL_DURATION_MILLIS)
+        );
+        assert!(!loaded.tool_durations().contains_key(UNTIMED_TOOL_ID));
     }
 
     #[test]
@@ -2744,7 +2793,7 @@ mod tests {
                 session.push_message(tool_message(&slot));
                 session.push_message(assistant_message("reply"));
             }
-            2 => session.insert_tool_output(slot, Value::from(format!("out-{step}"))),
+            2 => session.insert_tool_output(slot, Value::from(format!("out-{step}")), None),
             3 => {
                 let len = rng.below(4) as usize;
                 let msgs = (0..len)
@@ -2944,7 +2993,7 @@ mod tests {
         let held = Arc::clone(&session);
         let live = Arc::make_mut(&mut session);
         live.push_message(assistant_message("b"));
-        live.insert_tool_output("t1".into(), Value::from("out"));
+        live.insert_tool_output("t1".into(), Value::from("out"), None);
         live.set_subagent_messages("s1".into(), vec![user_message("sub")]);
 
         log.append(&session).unwrap();

@@ -28,6 +28,7 @@ pub mod status_bar;
 pub(crate) mod streaming_content;
 pub(crate) mod subscription_usage;
 pub(crate) mod theme_picker;
+pub(crate) mod timing;
 pub(crate) mod tool_display;
 pub(crate) mod usage_modal;
 
@@ -40,6 +41,7 @@ use maki_agent::review::ReviewTarget;
 use maki_agent::{BufferSnapshot, ToolInput, ToolOutput};
 use maki_providers::{Message, ModelTier};
 use ratatui::text::{Line, Span};
+use timing::ToolTiming;
 
 pub(crate) const CHEVRON: &str = "❯ ";
 
@@ -349,6 +351,7 @@ pub struct ToolRole {
     pub id: String,
     pub status: ToolStatus,
     pub name: Arc<str>,
+    pub(crate) timing: ToolTiming,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -365,6 +368,13 @@ impl DisplayRole {
     pub fn tool_name(&self) -> Option<&str> {
         match self {
             DisplayRole::Tool(t) => Some(&t.name),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn tool_timing(&self) -> Option<&ToolTiming> {
+        match self {
+            DisplayRole::Tool(t) => Some(&t.timing),
             _ => None,
         }
     }

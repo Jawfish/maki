@@ -189,6 +189,7 @@ impl App {
         let (display_msgs, restore_items) = history_to_display(
             self.state.session.messages(),
             self.state.session.tool_outputs(),
+            self.state.session.tool_durations(),
             &self.ui_config.tool_output_lines,
         );
         self.main_chat().load_messages(display_msgs);
@@ -226,6 +227,7 @@ impl App {
                 let (display, items) = history_to_display(
                     messages,
                     self.state.session.tool_outputs(),
+                    self.state.session.tool_durations(),
                     &self.ui_config.tool_output_lines,
                 );
                 chat.load_messages(display);

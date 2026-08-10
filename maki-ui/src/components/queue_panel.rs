@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use crate::components::keybindings::key;
-use crate::theme;
 use crate::components::marker::State;
+use crate::theme;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

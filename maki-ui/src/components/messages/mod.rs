@@ -14,6 +14,7 @@ use super::tool_display::{
 };
 use super::{
     DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
+    timing::ToolTiming,
 };
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
@@ -180,6 +181,7 @@ impl MessagesPanel {
             id,
             status: ToolStatus::InProgress,
             name: Arc::from(name),
+            timing: ToolTiming::started(),
         }));
         let mut msg = DisplayMessage::new(role, String::new());
         msg.timestamp = Some(format_timestamp_now());
@@ -206,6 +208,7 @@ impl MessagesPanel {
                 id: event.id,
                 status: ToolStatus::InProgress,
                 name: Arc::clone(&event.tool),
+                timing: ToolTiming::started(),
             })),
             event.summary,
         );
@@ -251,6 +254,7 @@ impl MessagesPanel {
             } else {
                 ToolStatus::Success
             };
+            t.timing.finish();
         }
         truncate_to_header(&mut msg.text);
         let done_annotation = event
@@ -435,6 +439,7 @@ impl MessagesPanel {
                     && t.status == ToolStatus::InProgress
                 {
                     t.status = ToolStatus::Error;
+                    t.timing.finish();
                     Some(t.id.clone())
                 } else {
                     None
@@ -1095,6 +1100,19 @@ impl MessagesPanel {
             .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
     }
 
+    /// Time the tool has been running, for the session record.
+    pub fn tool_elapsed_millis(&self, tool_id: &str) -> Option<u64> {
+        self.messages
+            .iter()
+            .rev()
+            .find_map(|m| match &m.role {
+                DisplayRole::Tool(t) if t.id == tool_id => Some(t),
+                _ => None,
+            })?
+            .timing
+            .millis()
+    }
+
     fn rctx(&self) -> RenderCtx<'_> {
         RenderCtx {
             started_at: self.started_at,
@@ -1230,6 +1248,7 @@ impl MessagesPanel {
         );
         for seg in self.cache.segments_mut() {
             seg.update_spinners(&spinner_span);
+            seg.update_elapsed();
         }
     }
 

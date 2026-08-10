@@ -974,8 +974,10 @@ impl App {
             chat.flush();
             chat.cancel_in_progress();
         }
-        self.main_chat()
-            .push(DisplayMessage::new(DisplayRole::Error, CANCELLED_TEXT.into()));
+        self.main_chat().push(DisplayMessage::new(
+            DisplayRole::Error,
+            CANCELLED_TEXT.into(),
+        ));
         self.queue.clear();
         self.recoverable_queue.clear();
         self.status = Status::Idle;
@@ -1094,9 +1096,12 @@ impl App {
             {
                 self.transition_plan(PlanTrigger::WriteDone);
             }
-            self.state
-                .session_mut()
-                .insert_tool_output(e.id.clone(), e.output.clone());
+            let duration_millis = self.chats[chat_idx].tool_elapsed_millis(&e.id);
+            self.state.session_mut().insert_tool_output(
+                e.id.clone(),
+                e.output.clone(),
+                duration_millis,
+            );
             if let Some(&sub_idx) = self.chat_index.get(&e.id) {
                 let (role, text) = if e.is_error {
                     (DisplayRole::Error, ERROR_TEXT)

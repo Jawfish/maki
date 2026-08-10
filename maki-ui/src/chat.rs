@@ -5,9 +5,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::components::messages::{MessagesPanel, PromptProgress};
-use crate::components::tool_display::append_annotation;
 use crate::components::marker::State;
+use crate::components::messages::{MessagesPanel, PromptProgress};
+use crate::components::timing::ToolTiming;
+use crate::components::tool_display::append_annotation;
 use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
 
@@ -191,6 +192,10 @@ impl Chat {
 
     pub fn win_view(&self) -> WinView {
         self.messages_panel.win_view()
+    }
+
+    pub fn tool_elapsed_millis(&self, tool_id: &str) -> Option<u64> {
+        self.messages_panel.tool_elapsed_millis(tool_id)
     }
 
     pub fn auto_scroll(&self) -> bool {
@@ -401,6 +406,7 @@ impl Chat {
 pub fn history_to_display(
     messages: &[Message],
     tool_outputs: &HashMap<String, Arc<ToolOutput>>,
+    tool_durations: &HashMap<String, u64>,
     tool_output_lines: &ToolOutputLines,
 ) -> (Vec<DisplayMessage>, Vec<maki_lua::RestoreItem>) {
     let results = build_tool_results_map(messages);
@@ -488,6 +494,11 @@ pub fn history_to_display(
                                     id: id.clone(),
                                     status,
                                     name: static_name.into(),
+                                    timing: tool_durations
+                                        .get(id.as_str())
+                                        .map_or_else(ToolTiming::default, |ms| {
+                                            ToolTiming::restored(*ms)
+                                        }),
                                 })),
                                 text,
                                 tool_input: None,
@@ -660,6 +671,13 @@ mod tests {
         HashMap::new()
     }
 
+    const RESTORED_DURATION_MILLIS: u64 = 1_234;
+    const RESTORED_LABEL: &str = "1.2s";
+
+    fn no_durations() -> HashMap<String, u64> {
+        HashMap::new()
+    }
+
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new(
@@ -750,9 +768,14 @@ mod tests {
             ..Default::default()
         }];
         assert!(
-            history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default())
-                .0
-                .is_empty()
+            history_to_display(
+                &msgs,
+                &empty_outputs(),
+                &no_durations(),
+                &ToolOutputLines::default()
+            )
+            .0
+            .is_empty()
         );
     }
 
@@ -768,7 +791,13 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         assert_eq!(display.len(), 1);
         assert_eq!(display[0].role, DisplayRole::Assistant);
         assert_eq!(display[0].text, "I will fix it");
@@ -807,7 +836,13 @@ mod tests {
             "output",
             is_error,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         assert_eq!(display.len(), 1);
         assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
     }
@@ -843,7 +878,13 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         assert_eq!(display.len(), 4);
         assert_eq!(display[0].role, DisplayRole::User);
         assert_eq!(display[1].role, DisplayRole::Assistant);
@@ -891,13 +932,36 @@ mod tests {
             let discriminant = std::mem::discriminant(&output);
             let msgs = tool_use_pair(tool_name, input_json, "ok", false);
             let outputs = HashMap::from([("t1".into(), Arc::new(output))]);
-            let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default()).0;
+            let display = history_to_display(
+                &msgs,
+                &outputs,
+                &no_durations(),
+                &ToolOutputLines::default(),
+            )
+            .0;
             assert_eq!(
                 std::mem::discriminant(display[0].tool_output.as_deref().unwrap()),
                 discriminant,
                 "stored {tool_name} output should pass through"
             );
         }
+    }
+
+    #[test]
+    fn history_restores_stored_tool_duration() {
+        let msgs = tool_use_pair("read", serde_json::json!({"path": "a"}), "ok", false);
+        let durations = HashMap::from([("t1".to_string(), RESTORED_DURATION_MILLIS)]);
+        let display = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &durations,
+            &ToolOutputLines::default(),
+        )
+        .0;
+        let DisplayRole::Tool(role) = &display[0].role else {
+            panic!("expected a tool message");
+        };
+        assert_eq!(role.timing.label(false).as_deref(), Some(RESTORED_LABEL));
     }
 
     #[test]
@@ -914,7 +978,13 @@ mod tests {
             false,
         );
         let outputs = HashMap::from([("t1".into(), Arc::new(write_output))]);
-        let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &outputs,
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         assert!(display[0].annotation.is_some());
     }
 
@@ -928,7 +998,13 @@ mod tests {
             &joined,
             false,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         let line_count = display[0].text.lines().count();
         assert!(
             line_count < long_output.len(),
@@ -944,7 +1020,13 @@ mod tests {
             "1: fn main() {}",
             false,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         assert!(display[0].tool_output.is_none());
         assert!(display[0].text.contains("fn main"));
     }
@@ -965,7 +1047,13 @@ mod tests {
             ],
             ..Default::default()
         }];
-        let display = history_to_display(&msgs, &HashMap::new(), &ToolOutputLines::default()).0;
+        let display = history_to_display(
+            &msgs,
+            &HashMap::new(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        )
+        .0;
         assert_eq!(display.len(), 2);
         assert_eq!(display[0].role, DisplayRole::Thinking);
         assert_eq!(display[0].text, "reasoning");
@@ -980,6 +1068,7 @@ mod tests {
             id: "t1".into(),
             status: ToolStatus::Success,
             name: tool.into(),
+            timing: ToolTiming::default(),
         }));
         msg.tool_raw_input = Some(Arc::new(serde_json::json!({ "q": tool })));
         msg.tool_output = Some(Arc::new(ToolOutput::Plain(RESTORE_OUTPUT.into())));
@@ -1017,10 +1106,20 @@ mod tests {
             false,
         );
         let outputs = HashMap::from([("t1".to_owned(), Arc::new(edit_output("a")))]);
-        let (_, items) = history_to_display(&msgs, &outputs, &ToolOutputLines::default());
+        let (_, items) = history_to_display(
+            &msgs,
+            &outputs,
+            &no_durations(),
+            &ToolOutputLines::default(),
+        );
         assert!(items.is_empty(), "Rust owns Diff rendering on restore");
 
-        let (_, items) = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
+        let (_, items) = history_to_display(
+            &msgs,
+            &empty_outputs(),
+            &no_durations(),
+            &ToolOutputLines::default(),
+        );
         assert_eq!(items.len(), 1, "text-only history still restores via Lua");
     }
 

@@ -2291,9 +2291,11 @@ fn build_rewind_app() -> App {
         },
         Message::user("third prompt".into()),
     ]);
-    app.state
-        .session_mut()
-        .insert_tool_output("tool-1".into(), ToolOutput::Plain("output".into()));
+    app.state.session_mut().insert_tool_output(
+        "tool-1".into(),
+        ToolOutput::Plain("output".into()),
+        None,
+    );
     app
 }
 

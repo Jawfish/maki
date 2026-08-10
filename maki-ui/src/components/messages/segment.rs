@@ -3,7 +3,7 @@ use crate::render_worker::RenderWorker;
 use crate::selection::Join;
 
 use super::super::code_view::SectionFlags;
-use super::super::tool_display::{HighlightRequest, ToolLines};
+use super::super::tool_display::{ElapsedStamp, HighlightRequest, ToolLines};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use std::cell::Cell;
@@ -57,6 +57,7 @@ pub(super) struct Segment {
     highlight_range: Option<(usize, usize)>,
     highlight_key: HighlightKey,
     pub spinner_lines: Vec<(usize, usize)>,
+    pub elapsed_stamp: Option<ElapsedStamp>,
     snapshot_base: Option<usize>,
     pub content_indent: &'static str,
     /// Set only for pre-wrapped message lines: how each row joins the one
@@ -165,6 +166,19 @@ impl Segment {
         self.cached_height.set(None);
     }
 
+    /// Reprints the running tool's elapsed stamp in place, the same way
+    /// spinners are refreshed: no segment rebuild, no drift.
+    pub fn update_elapsed(&mut self) {
+        let Some(stamp) = &self.elapsed_stamp else {
+            return;
+        };
+        if let Some(line) = self.lines.get_mut(stamp.line)
+            && line.spans.len() > stamp.span
+        {
+            line.spans[stamp.span] = stamp.span();
+        }
+    }
+
     pub fn update_spinners(&mut self, span: &Span<'static>) {
         for &(line_idx, span_idx) in &self.spinner_lines {
             if let Some(line) = self.lines.get_mut(line_idx)
@@ -198,6 +212,7 @@ impl Segment {
         self.highlight_range = tl.highlight.as_ref().map(|h| h.range);
         self.highlight_key = HighlightKey::from_request(tl.highlight.as_ref());
         self.spinner_lines = tl.spinner_lines;
+        self.elapsed_stamp = tl.elapsed_stamp;
         self.snapshot_base = tl.snapshot_base;
         self.content_indent = tl.content_indent;
         self.truncation = tl.truncation;
@@ -264,6 +279,9 @@ impl Segment {
         };
         for (line, _) in &mut self.spinner_lines {
             shift(line);
+        }
+        if let Some(stamp) = &mut self.elapsed_stamp {
+            shift(&mut stamp.line);
         }
         if let Some(base) = &mut self.snapshot_base {
             shift(base);
@@ -383,7 +401,13 @@ pub(super) fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
     use test_case::test_case;
+
+    const SPINNER_SPAN: &str = "* ";
+    const STALE_STAMP: &str = "1s ";
+    const ELAPSED_SECS: u64 = 45;
+    const ELAPSED_LABEL: &str = "45s";
 
     fn seg_with_base(line_count: usize, base: Option<usize>) -> Segment {
         Segment {
@@ -415,6 +439,28 @@ mod tests {
         assert_eq!(seg.buf_row(2), 0, "pre-snapshot lines map outside the buf");
         assert_eq!(seg.buf_row(3), 1);
         assert_eq!(seg.buf_row(5), 3);
+    }
+
+    #[test]
+    fn elapsed_stamp_reprints_in_place_on_every_redraw() {
+        let mut seg = seg_with_base(2, None);
+        seg.lines[0] = Line::from(vec![Span::raw(SPINNER_SPAN), Span::raw(STALE_STAMP)]);
+        seg.elapsed_stamp = Some(ElapsedStamp {
+            line: 0,
+            span: 1,
+            started_at: Instant::now() - Duration::from_secs(ELAPSED_SECS),
+        });
+
+        seg.update_elapsed();
+
+        assert_eq!(seg.lines[0].spans[0].content.as_ref(), SPINNER_SPAN);
+        assert!(
+            seg.lines[0].spans[1]
+                .content
+                .as_ref()
+                .starts_with(ELAPSED_LABEL),
+            "stale stamp should be replaced by the live elapsed time"
+        );
     }
 
     #[test_case(4, 6 ; "splice_grows")]

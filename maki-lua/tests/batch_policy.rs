@@ -686,7 +686,10 @@ fn restore_with_state_renders_child_header_contract() {
     let header = &lines[0];
     assert_eq!(
         header[0],
-        (DONE_MARKER.to_owned(), SpanStyle::Named("tool_success".to_owned()))
+        (
+            DONE_MARKER.to_owned(),
+            SpanStyle::Named("tool_success".to_owned())
+        )
     );
     assert_eq!(
         header[1],
@@ -725,7 +728,10 @@ fn restore_error_child_renders_error_style() {
     );
     assert_eq!(
         lines[0][0],
-        (FAILED_MARKER.to_owned(), SpanStyle::Named("tool_error".to_owned()))
+        (
+            FAILED_MARKER.to_owned(),
+            SpanStyle::Named("tool_error".to_owned())
+        )
     );
     let text = lines_text(&lines);
     assert!(text.contains("it broke"), "got: {text}");

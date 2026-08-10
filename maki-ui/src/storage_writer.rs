@@ -296,6 +296,7 @@ mod tests {
         session.insert_tool_output(
             TOOL_ID.into(),
             maki_agent::ToolOutput::Plain(TOOL_TEXT.to_string().into()),
+            None,
         );
         session.set_title(TITLE.into());
 

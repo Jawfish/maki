@@ -43,7 +43,6 @@ pub(crate) fn right_align(text: &str, width: usize) -> String {
     out
 }
 
-
 /// Readable measure for prose: the terminal width, capped by the configured
 /// maximum. Tool output, diffs, and tables keep the full viewport width.
 pub(crate) fn prose_measure(viewport_width: u16, max_prose_width: u16) -> u16 {
