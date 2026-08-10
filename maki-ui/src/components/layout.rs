@@ -43,6 +43,12 @@ pub(crate) fn right_align(text: &str, width: usize) -> String {
     out
 }
 
+
+/// Readable measure for prose: the terminal width, capped by the configured
+/// maximum. Tool output, diffs, and tables keep the full viewport width.
+pub(crate) fn prose_measure(viewport_width: u16, max_prose_width: u16) -> u16 {
+    viewport_width.min(max_prose_width.max(1))
+}
 /// Wrapped lines plus how each row joins the row above it, so a copied
 /// selection can rebuild the logical lines the wrap came from.
 pub(crate) struct WrappedLines {
@@ -232,6 +238,7 @@ mod tests {
     use test_case::test_case;
 
     const WIDTH: u16 = 12;
+    const MAX_PROSE: u16 = 88;
 
     fn texts(lines: &[Line<'_>]) -> Vec<String> {
         lines
@@ -296,5 +303,12 @@ mod tests {
         for row in texts(&wrapped.lines) {
             assert!(row.width() <= usize::from(WIDTH), "row too wide: {row:?}");
         }
+    }
+
+    #[test_case(200, MAX_PROSE, MAX_PROSE ; "wide_terminal_caps_at_measure")]
+    #[test_case(60, MAX_PROSE, 60 ; "narrow_terminal_keeps_full_width")]
+    #[test_case(60, 0, 1 ; "zero_cap_still_leaves_a_column")]
+    fn prose_measure_caps_wide_terminals(viewport: u16, max: u16, expected: u16) {
+        assert_eq!(prose_measure(viewport, max), expected);
     }
 }

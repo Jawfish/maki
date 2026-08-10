@@ -693,6 +693,22 @@ pub fn extract_selected_text(
         }
         row = region_end;
     }
+    strip_trailing_padding(out)
+}
+
+/// A copied selection is a set of logical lines: every row loses the padding
+/// the renderer used to fill the viewport, whatever produced it.
+pub fn strip_trailing_padding(text: String) -> String {
+    if !text.lines().any(|l| l.ends_with([' ', '\t'])) {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line.trim_end_matches([' ', '\t']));
+    }
     out
 }
 
@@ -1359,5 +1375,34 @@ mod tests {
             &LineBreaks::EveryRow,
         );
         assert_eq!(out, "好");
+    }
+
+    const PADDED_PROSE: &str = "first logical line   \nsecond logical line \n\nfourth  ";
+
+    #[test_case(PADDED_PROSE ; "raw_region_text")]
+    #[test_case("a\t\nb  \t " ; "tabs_and_spaces")]
+    fn copied_selection_has_no_trailing_whitespace(raw: &str) {
+        use ratatui::widgets::{Paragraph, Widget, Wrap};
+        let lines: Vec<Line<'static>> = raw.lines().map(|l| Line::from(l.to_owned())).collect();
+        let width = 40;
+        let area = Rect::new(0, 0, width, lines.len() as u16);
+        let mut buf = Buffer::empty(area);
+        Paragraph::new(lines.clone())
+            .wrap(Wrap { trim: false })
+            .render(area, &mut buf);
+        let region = ContentRegion {
+            area,
+            raw_text: raw,
+            line_breaks: LineBreaks::from_lines(&lines, width),
+        };
+        let text = extract_selected_text(
+            &buf,
+            &ss(0, 0, area.height - 1, width - 1),
+            std::slice::from_ref(&region),
+        );
+        assert!(text.contains('\n'), "selection must span several lines");
+        for line in text.lines() {
+            assert_eq!(line, line.trim_end(), "copied line keeps padding");
+        }
     }
 }

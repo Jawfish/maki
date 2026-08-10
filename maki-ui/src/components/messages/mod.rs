@@ -18,7 +18,8 @@ use super::{
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
 use crate::components::layout::{
-    SPACING_BLOCK, SPACING_SECTION, blank_rows, separator_rows, wrap_with_hanging_indent,
+    SPACING_BLOCK, SPACING_SECTION, blank_rows, prose_measure, separator_rows,
+    wrap_with_hanging_indent,
 };
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
@@ -63,6 +64,7 @@ pub struct MessagesPanel {
     auto_scroll: bool,
     viewport_height: u16,
     viewport_width: u16,
+    prose_width: u16,
     cache: SegmentCache,
     last_total_lines: u16,
     hl_worker: RenderWorker,
@@ -114,6 +116,7 @@ impl MessagesPanel {
             auto_scroll: true,
             viewport_height: 24,
             viewport_width: crossterm::terminal::size().map_or(80, |(w, _)| w.saturating_sub(1)),
+            prose_width: u16::try_from(ui_config.prose_width).unwrap_or(u16::MAX),
             cache: SegmentCache::new(),
             last_total_lines: 0,
             hl_worker: RenderWorker::new(),
@@ -610,6 +613,10 @@ impl MessagesPanel {
         self.viewport_height as i32 / 2
     }
 
+    fn prose_measure(&self) -> u16 {
+        prose_measure(self.viewport_width, self.prose_width)
+    }
+
     pub fn set_accent(&mut self, color: ratatui::style::Color) {
         self.accent.set(color);
     }
@@ -806,14 +813,14 @@ impl MessagesPanel {
             push_separator(&mut streaming_heights, cached_count == 0, false);
             streaming_heights.push(collapsed_thinking_lines.len() as u16);
         } else if !self.streaming_thinking.is_empty() {
-            let lines = self.streaming_thinking.render_lines(width);
+            let lines = self.streaming_thinking.render_lines(self.prose_measure());
             push_separator(&mut streaming_heights, cached_count == 0, false);
             streaming_heights.push(wrapped_line_count(lines, width));
         }
 
         let streaming_text_divider = !self.streaming_text.is_empty() && cached_count > 0;
         if !self.streaming_text.is_empty() {
-            let lines = self.streaming_text.render_lines(width);
+            let lines = self.streaming_text.render_lines(self.prose_measure());
             let first_block = cached_count == 0 && streaming_heights.is_empty();
             push_separator(&mut streaming_heights, first_block, streaming_text_divider);
             streaming_heights.push(wrapped_line_count(lines, width));
@@ -1327,13 +1334,17 @@ impl MessagesPanel {
                 } else {
                     style.prefix
                 };
+                let prose_width = match msg.role {
+                    DisplayRole::Assistant | DisplayRole::Thinking => self.prose_measure(),
+                    _ => self.viewport_width,
+                };
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
                         prefix,
                         style.text_style,
                         style.prefix_style,
-                        self.viewport_width,
+                        prose_width,
                         style.max_line_bytes,
                     )
                 } else {
@@ -1371,7 +1382,7 @@ impl MessagesPanel {
                 let search_text = format!("{prefix}{}", msg.text);
                 self.cache.push_spacing(rows);
                 self.cache.push(Segment::with_wrapped(
-                    wrap_with_hanging_indent(lines, self.viewport_width),
+                    wrap_with_hanging_indent(lines, prose_width),
                     search_text,
                     Some(i),
                 ));

@@ -22,8 +22,10 @@ pub const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
 pub const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
 pub const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
 pub const DEFAULT_MAX_INPUT_LINES: u32 = 20;
+pub const DEFAULT_PROSE_WIDTH: u32 = 88;
 
 pub const MIN_MAX_INPUT_LINES: u32 = 1;
+pub const MIN_PROSE_WIDTH: u32 = 20;
 
 pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
 pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percent(20);
@@ -333,6 +335,7 @@ pub struct UiFileConfig {
     pub theme: Option<String>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
+    pub prose_width: Option<u32>,
 }
 
 impl UiFileConfig {
@@ -349,7 +352,8 @@ impl UiFileConfig {
             notify,
             notify_model,
             theme,
-            max_input_lines
+            max_input_lines,
+            prose_width
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
             (Some(base), Some(over)) => base.merge(over),
@@ -836,6 +840,13 @@ pub struct UiConfig {
     pub max_input_lines: u32,
 
     #[config(
+        default = DEFAULT_PROSE_WIDTH,
+        min = MIN_PROSE_WIDTH,
+        desc = "Maximum width in cells for assistant and thinking prose. Tool output, diffs, and tables stay full width"
+    )]
+    pub prose_width: u32,
+
+    #[config(
         default = true,
         desc = "When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes"
     )]
@@ -876,6 +887,7 @@ impl UiConfig {
                 .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
             mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
             max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
+            prose_width: f.prose_width.unwrap_or(DEFAULT_PROSE_WIDTH),
             show_thinking: f.show_thinking.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
             notify_model: f.notify_model,

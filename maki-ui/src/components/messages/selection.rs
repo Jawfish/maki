@@ -72,5 +72,5 @@ pub(super) fn extract_selection_text(
         };
         selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out, &breaks);
     }
-    out
+    selection::strip_trailing_padding(out)
 }
