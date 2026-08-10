@@ -278,7 +278,7 @@ impl Copilot {
                     .map(Arc::new)
             });
         if let Some(info) = reasoning_info {
-            apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
+            thinking.apply_responses_reasoning(&mut body, &effort_dialect(&info), model);
         }
         let resolved = super::ResolvedAuth {
             base_url: Some(auth.endpoint.clone()),
@@ -682,17 +682,6 @@ pub(crate) fn thinking_efforts(model: &Model) -> Vec<Effort> {
         )
 }
 
-fn apply_responses_reasoning(
-    body: &mut Value,
-    thinking: ThinkingConfig,
-    model: &Model,
-    dialect: &EffortDialect,
-) {
-    if let Some(effort) = thinking.effort_str(dialect, model) {
-        body["reasoning"] = json!({"effort": effort});
-    }
-}
-
 fn guess_endpoint(model_id: &str) -> Endpoint {
     if model_id.starts_with("claude-") {
         Endpoint::Messages
@@ -872,16 +861,12 @@ mod tests {
         let dialect = effort_dialect(&info);
 
         let mut body = json!({});
-        apply_responses_reasoning(&mut body, ThinkingConfig::Off, &model, &dialect);
+        ThinkingConfig::Off.apply_responses_reasoning(&mut body, &dialect, &model);
         assert_eq!(body, json!({"reasoning": {"effort": "none"}}));
 
         let mut body = json!({});
-        apply_responses_reasoning(
-            &mut body,
-            ThinkingConfig::Effort(Effort::Medium),
-            &model,
-            &dialect,
-        );
+        ThinkingConfig::Effort(Effort::Medium)
+            .apply_responses_reasoning(&mut body, &dialect, &model);
         assert_eq!(body, json!({"reasoning": {"effort": "medium"}}));
         assert!(body.get("reasoning_effort").is_none());
     }

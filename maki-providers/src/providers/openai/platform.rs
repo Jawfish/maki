@@ -10,9 +10,9 @@ use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
+use crate::types::openai_dialect;
 use crate::{
     AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse, UsageLimit,
-    dialect,
 };
 
 use super::auth;
@@ -277,7 +277,12 @@ impl Provider for OpenAi {
             let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
             if is_codex_model(&model.id) {
-                let body = super::responses::build_body(model, messages, system, tools);
+                let mut body = super::responses::build_body(model, messages, system, tools);
+                opts.thinking.apply_responses_reasoning(
+                    &mut body,
+                    openai_dialect(&model.id),
+                    model,
+                );
                 let stream_timeout = self.compat.stream_timeout();
                 return self
                     .with_oauth_retry(|| async {
@@ -297,7 +302,7 @@ impl Provider for OpenAi {
 
             let mut body = self.compat.build_body(model, messages, system, tools);
             opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
+                .apply_reasoning_effort(&mut body, openai_dialect(&model.id), model);
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat

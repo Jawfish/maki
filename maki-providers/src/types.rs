@@ -396,6 +396,17 @@ const ADAPTIVE_SINCE: (u32, u32) = (5, 0);
 const ADAPTIVE_SINCE_OPUS: (u32, u32) = (4, 7);
 const OPUS: &str = "opus";
 
+/// Families whose thinking cannot be turned off: `thinking: {type:
+/// "disabled"}` returns a 400 there, so Off can only mean "send no thinking
+/// config". Matches the preview ids too (`claude-mythos-preview`).
+const ALWAYS_THINKING: [&str; 2] = ["claude-fable", "claude-mythos"];
+
+fn thinking_always_on(model_id: &str) -> bool {
+    ALWAYS_THINKING
+        .iter()
+        .any(|family| model_id.starts_with(family))
+}
+
 /// `claude-opus-4.7` -> `("opus", (4, 7))`, `claude-opus-5-1m` -> `("opus", (5, 0))`.
 /// Copilot writes the version with a dot, hence the two separators. Legacy ids
 /// put the version first (`claude-3-5-sonnet-20241022`), so a numeric family
@@ -406,6 +417,50 @@ fn claude_version(model_id: &str) -> Option<(&str, (u32, u32))> {
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
     Some((family, (major, minor)))
+}
+
+/// First GPT version that takes each level. `minimal` belongs to the original
+/// GPT-5 trio alone, `none` replaced it in 5.1, `xhigh` landed in 5.2, and
+/// `max` in 5.6.
+const NONE_SINCE: (u32, u32) = (5, 1);
+const XHIGH_SINCE: (u32, u32) = (5, 2);
+const MAX_SINCE: (u32, u32) = (5, 6);
+const CODEX: &str = "codex";
+const CODEX_MAX: &str = "codex-max";
+const PRO: &str = "-pro";
+
+/// `gpt-5.6-luna` -> `(5, 6)`, `gpt-5` -> `(5, 0)`. Dated and named suffixes
+/// sit after the version, so everything past the minor is ignored.
+fn gpt_version(model_id: &str) -> Option<(u32, u32)> {
+    let mut parts = model_id.strip_prefix("gpt-")?.split(['-', '.']);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor))
+}
+
+/// Which levels an OpenAI model accepts. A version check rather than an
+/// allowlist, so new releases work without a registry edit. Ids that carry no
+/// GPT version are the o-series, which take the plain triad.
+pub fn openai_dialect(model_id: &str) -> &'static EffortDialect<'static> {
+    let Some(version) = gpt_version(model_id) else {
+        return &dialect::OPENAI_TRIAD;
+    };
+    if model_id.contains(CODEX) {
+        return if version >= XHIGH_SINCE || model_id.ends_with(CODEX_MAX) {
+            &dialect::OPENAI_CODEX_XHIGH
+        } else {
+            &dialect::OPENAI_TRIAD
+        };
+    }
+    if model_id.ends_with(PRO) {
+        return &dialect::OPENAI_PRO;
+    }
+    match version {
+        v if v >= MAX_SINCE => &dialect::OPENAI_MAX,
+        v if v >= XHIGH_SINCE => &dialect::OPENAI_XHIGH,
+        v if v >= NONE_SINCE => &dialect::OPENAI_NONE,
+        _ => &dialect::STANDARD,
+    }
 }
 
 /// How a provider's effort knob speaks: which levels its API accepts, what
@@ -431,9 +486,47 @@ pub mod dialect {
     /// opt-out.
     pub const OFF: &str = "none";
 
-    /// OpenAI platform, synthetic.
+    /// Synthetic, and the original GPT-5 trio: `minimal` never spread past
+    /// those three models. See [`super::openai_dialect`] for the rest.
     pub const STANDARD: EffortDialect = EffortDialect {
         supported: &[Minimal, Low, Medium, High],
+        adaptive: Some(Medium),
+        off: None,
+    };
+    /// GPT-5.1: `none` replaced `minimal`, and `xhigh` had not landed yet.
+    pub const OPENAI_NONE: EffortDialect = EffortDialect {
+        supported: &[Low, Medium, High],
+        adaptive: Some(Medium),
+        off: Some(OFF),
+    };
+    /// GPT-5.2 through GPT-5.5, which added `xhigh`.
+    pub const OPENAI_XHIGH: EffortDialect = EffortDialect {
+        supported: &[Low, Medium, High, XHigh],
+        adaptive: Some(Medium),
+        off: Some(OFF),
+    };
+    /// GPT-5.6 and later, the first to take `max`.
+    pub const OPENAI_MAX: EffortDialect = EffortDialect {
+        supported: &[Low, Medium, High, XHigh, Max],
+        adaptive: Some(Medium),
+        off: Some(OFF),
+    };
+    /// Codex and o-series models always reason: they reject `none`, so Off
+    /// falls back to their own default.
+    pub const OPENAI_TRIAD: EffortDialect = EffortDialect {
+        supported: &[Low, Medium, High],
+        adaptive: Some(Medium),
+        off: None,
+    };
+    /// Codex from GPT-5.1 codex-max on.
+    pub const OPENAI_CODEX_XHIGH: EffortDialect = EffortDialect {
+        supported: &[Low, Medium, High, XHigh],
+        adaptive: Some(Medium),
+        off: None,
+    };
+    /// Pro models refuse everything below `medium`.
+    pub const OPENAI_PRO: EffortDialect = EffortDialect {
+        supported: &[Medium, High, XHigh],
         adaptive: Some(Medium),
         off: None,
     };
@@ -463,10 +556,13 @@ pub mod dialect {
         adaptive: None,
         off: None,
     };
-    /// `output_config.effort` on Anthropic adaptive-thinking models. The API
-    /// has native adaptive mode, so Adaptive sends no effort.
+    /// `output_config.effort` on Anthropic adaptive-thinking models, which
+    /// take every documented level: `low`, `medium`, `high` (the API default),
+    /// `xhigh`, and `max`. `minimal` has no Anthropic equivalent and snaps up
+    /// to `low`. The API has native adaptive mode, so Adaptive sends no effort
+    /// and lets the model pick its depth.
     pub const ANTHROPIC_ADAPTIVE: EffortDialect = EffortDialect {
-        supported: &[Low, Medium, High],
+        supported: &[Low, Medium, High, XHigh, Max],
         adaptive: None,
         off: None,
     };
@@ -539,14 +635,22 @@ impl ThinkingConfig {
 
     /// Anthropic messages API body. Adaptive-thinking models get the native
     /// adaptive knob plus `output_config.effort`; legacy models get a plain
-    /// token budget.
+    /// token budget. Adaptive models default `display` to `"omitted"`, which
+    /// returns empty thinking blocks, so ask for summaries whenever thinking
+    /// is on: the UI streams them.
     pub fn apply_to_body(self, body: &mut Value, model: &Model) {
         if Self::requires_adaptive(&model.id) {
             match self {
-                Self::Off => {}
-                Self::Adaptive => body["thinking"] = json!({"type": "adaptive"}),
+                // Thinking is on by default from Opus 5 and Sonnet 5 on, so Off
+                // has to say so. Sending no effort alongside keeps the default
+                // `high`; `disabled` with `xhigh` or `max` is a 400.
+                Self::Off if thinking_always_on(&model.id) => {}
+                Self::Off => body["thinking"] = json!({"type": "disabled"}),
+                Self::Adaptive => {
+                    body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
+                }
                 Self::Effort(_) | Self::Budget(_) => {
-                    body["thinking"] = json!({"type": "adaptive"});
+                    body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
                     if let Some(effort) = self.effort_str(&dialect::ANTHROPIC_ADAPTIVE, model) {
                         body["output_config"]["effort"] = json!(effort);
                     }
@@ -580,6 +684,18 @@ impl ThinkingConfig {
     pub fn apply_reasoning_effort(self, body: &mut Value, dialect: &EffortDialect, model: &Model) {
         if let Some(effort) = self.effort_str(dialect, model) {
             body["reasoning_effort"] = json!(effort);
+        }
+    }
+
+    /// The Responses API nests the same level under `reasoning.effort`.
+    pub fn apply_responses_reasoning(
+        self,
+        body: &mut Value,
+        dialect: &EffortDialect,
+        model: &Model,
+    ) {
+        if let Some(effort) = self.effort_str(dialect, model) {
+            body["reasoning"] = json!({"effort": effort});
         }
     }
 
@@ -896,7 +1012,7 @@ mod tests {
         assert_eq!(&*deserialized.data, "abc123");
     }
 
-    use Effort::{High, Low, Max, Minimal, XHigh};
+    use Effort::{High, Low, Max, Medium, Minimal, XHigh};
 
     /// `max_output_tokens: 8192`, so `max_thinking_budget()` is 4096.
     fn thinking_model(id: &str) -> crate::model::Model {
@@ -916,6 +1032,12 @@ mod tests {
             &dialect::DEEPSEEK,
             &dialect::ANTHROPIC_ADAPTIVE,
             &dialect::TENSORX,
+            &dialect::OPENAI_NONE,
+            &dialect::OPENAI_XHIGH,
+            &dialect::OPENAI_MAX,
+            &dialect::OPENAI_TRIAD,
+            &dialect::OPENAI_CODEX_XHIGH,
+            &dialect::OPENAI_PRO,
         ];
         for d in all {
             assert!(!d.supported.is_empty());
@@ -928,20 +1050,72 @@ mod tests {
         }
     }
 
+    #[test_case("gpt-5.6-luna",       &[Low, Medium, High, XHigh, Max], Some("none") ; "openai_5_6_takes_max")]
+    #[test_case("gpt-5.6-sol",        &[Low, Medium, High, XHigh, Max], Some("none") ; "openai_5_6_sol")]
+    #[test_case("gpt-5.5",            &[Low, Medium, High, XHigh],      Some("none") ; "openai_5_5_stops_at_xhigh")]
+    #[test_case("gpt-5.4-nano",       &[Low, Medium, High, XHigh],      Some("none") ; "openai_5_4_nano")]
+    #[test_case("gpt-5.1",            &[Low, Medium, High],             Some("none") ; "openai_5_1_has_none_but_no_xhigh")]
+    #[test_case("gpt-5-nano",         &[Minimal, Low, Medium, High],    None         ; "openai_5_0_keeps_minimal")]
+    #[test_case("gpt-5.1-codex",      &[Low, Medium, High],             None         ; "codex_5_1_triad")]
+    #[test_case("gpt-5.1-codex-max",  &[Low, Medium, High, XHigh],      None         ; "codex_max_adds_xhigh")]
+    #[test_case("gpt-5.3-codex",      &[Low, Medium, High, XHigh],      None         ; "codex_5_3")]
+    #[test_case("gpt-5.5-pro",        &[Medium, High, XHigh],           None         ; "pro_floors_at_medium")]
+    #[test_case("o4-mini",            &[Low, Medium, High],             None         ; "o_series_triad")]
+    fn openai_dialect_per_model(model_id: &str, supported: &[Effort], off: Option<&str>) {
+        let dialect = openai_dialect(model_id);
+        assert_eq!(dialect.supported, supported);
+        assert_eq!(dialect.off, off);
+    }
+
+    #[test_case(ThinkingConfig::Off,             "gpt-5.6-luna", Some("none")   ; "off_disables_reasoning")]
+    #[test_case(ThinkingConfig::Effort(Minimal), "gpt-5.6-luna", Some("low")    ; "minimal_snaps_up_past_removal")]
+    #[test_case(ThinkingConfig::Effort(Max),     "gpt-5.6-luna", Some("max")    ; "max_passthrough")]
+    #[test_case(ThinkingConfig::Effort(Max),     "gpt-5.4-nano", Some("xhigh")  ; "max_snaps_to_xhigh")]
+    #[test_case(ThinkingConfig::Off,             "gpt-5.1-codex", None          ; "codex_cannot_turn_reasoning_off")]
+    #[test_case(ThinkingConfig::Effort(Minimal), "gpt-5-nano",   Some("minimal") ; "legacy_gpt5_keeps_minimal")]
+    fn openai_effort_wire_value(config: ThinkingConfig, model_id: &str, expected: Option<&str>) {
+        let mut body = json!({});
+        config.apply_reasoning_effort(
+            &mut body,
+            openai_dialect(model_id),
+            &thinking_model(model_id),
+        );
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            expected
+        );
+    }
+
+    #[test]
+    fn responses_reasoning_nests_the_effort() {
+        let mut body = json!({});
+        ThinkingConfig::Off.apply_responses_reasoning(
+            &mut body,
+            openai_dialect("gpt-5.6-luna"),
+            &thinking_model("gpt-5.6-luna"),
+        );
+        assert_eq!(body, json!({"reasoning": {"effort": "none"}}));
+    }
+
     #[test_case(ThinkingConfig::Off, "claude-opus-4-5", json!({}) ; "off")]
     #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-5", json!({"thinking": {"type": "adaptive"}}) ; "adaptive")]
     #[test_case(ThinkingConfig::Budget(2048), "claude-opus-4-5", json!({"thinking": {"type": "enabled", "budget_tokens": 2048}}) ; "budget_legacy_in_range")]
     #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-5", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_clamped_to_max")]
     #[test_case(ThinkingConfig::Budget(10000), "claude-sonnet-4-6", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_sonnet")]
     #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-6", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_opus_4_6")]
-    #[test_case(ThinkingConfig::Off, "claude-opus-4-7", json!({}) ; "off_adaptive_model")]
-    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}}) ; "adaptive_adaptive_model")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_7")]
-    #[test_case(ThinkingConfig::Effort(Low), "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}) ; "effort_low_passthrough")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-8-1m", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_8_long_context")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-5-1m", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_5_unparsable_minor")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_copilot_dotted_id")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-sonnet-5", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_sonnet_5")]
+    #[test_case(ThinkingConfig::Off, "claude-opus-4-7", json!({"thinking": {"type": "disabled"}}) ; "off_adaptive_model_disables")]
+    #[test_case(ThinkingConfig::Off, "claude-fable-5", json!({}) ; "off_always_thinking_family_sends_nothing")]
+    #[test_case(ThinkingConfig::Off, "claude-mythos-5", json!({}) ; "off_mythos_sends_nothing")]
+    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-7", json!({"thinking": {"type": "adaptive", "display": "summarized"}}) ; "adaptive_adaptive_model")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-7", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "max"}}) ; "budget_adaptive_opus_4_7")]
+    #[test_case(ThinkingConfig::Effort(Low), "claude-opus-4-7", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "low"}}) ; "effort_low_passthrough")]
+    #[test_case(ThinkingConfig::Effort(XHigh), "claude-opus-5", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "xhigh"}}) ; "effort_xhigh_passthrough")]
+    #[test_case(ThinkingConfig::Effort(Max), "claude-opus-5", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "max"}}) ; "effort_max_passthrough")]
+    #[test_case(ThinkingConfig::Effort(Minimal), "claude-opus-5", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "low"}}) ; "effort_minimal_snaps_up_to_low")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-8-1m", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "max"}}) ; "budget_adaptive_opus_4_8_long_context")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-5-1m", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "max"}}) ; "budget_adaptive_opus_5_unparsable_minor")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.7", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "max"}}) ; "budget_adaptive_copilot_dotted_id")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-sonnet-5", json!({"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "max"}}) ; "budget_adaptive_sonnet_5")]
     #[test_case(ThinkingConfig::Budget(10000), "claude-3-5-sonnet-20241022", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_dated_id")]
     fn thinking_apply_to_body(config: ThinkingConfig, model_id: &str, expected: Value) {
         let mut body = json!({});
@@ -952,8 +1126,8 @@ mod tests {
     #[test_case(ThinkingConfig::Off,             "claude-opus-5",   None            ; "label_off_hidden")]
     #[test_case(ThinkingConfig::Adaptive,        "claude-opus-5",   Some("adaptive") ; "label_adaptive")]
     #[test_case(ThinkingConfig::Effort(Minimal), "claude-opus-5",   Some("low")     ; "label_effort_snaps_up_to_lowest")]
-    #[test_case(ThinkingConfig::Effort(Max),     "claude-opus-5",   Some("high")    ; "label_effort_snaps_down")]
-    #[test_case(ThinkingConfig::Budget(10000),   "claude-opus-5",   Some("high")    ; "label_budget_as_effort_on_adaptive_model")]
+    #[test_case(ThinkingConfig::Effort(Max),     "claude-opus-5",   Some("max")     ; "label_effort_max_supported")]
+    #[test_case(ThinkingConfig::Budget(10000),   "claude-opus-5",   Some("max")     ; "label_budget_as_effort_on_adaptive_model")]
     #[test_case(ThinkingConfig::Effort(XHigh),   "claude-opus-4-5", Some("xhigh")   ; "label_effort_legacy_passthrough")]
     #[test_case(ThinkingConfig::Budget(2048),    "claude-opus-4-5", Some("2.0k")    ; "label_budget_as_tokens_on_legacy_model")]
     fn thinking_level_label(config: ThinkingConfig, model_id: &str, expected: Option<&str>) {
@@ -983,7 +1157,8 @@ mod tests {
     #[test_case(&dialect::DEEPSEEK, ThinkingConfig::Adaptive,        None        ; "deepseek_adaptive_uses_api_default")]
     #[test_case(&dialect::DEEPSEEK, ThinkingConfig::Effort(Minimal), Some("max") ; "deepseek_minimal")]
     #[test_case(&dialect::ANTHROPIC_ADAPTIVE, ThinkingConfig::Adaptive,      None         ; "anthropic_adaptive_is_native")]
-    #[test_case(&dialect::ANTHROPIC_ADAPTIVE, ThinkingConfig::Effort(XHigh), Some("high") ; "anthropic_xhigh_snaps_down")]
+    #[test_case(&dialect::ANTHROPIC_ADAPTIVE, ThinkingConfig::Effort(XHigh), Some("xhigh") ; "anthropic_xhigh_passthrough")]
+    #[test_case(&dialect::ANTHROPIC_ADAPTIVE, ThinkingConfig::Effort(Minimal), Some("low") ; "anthropic_minimal_snaps_up")]
     #[test_case(&dialect::TENSORX, ThinkingConfig::Off,             Some("none") ; "tensorx_off_explicit_none")]
     fn thinking_apply_reasoning_effort(
         dialect: &EffortDialect,

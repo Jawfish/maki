@@ -3445,10 +3445,11 @@ fn thinking_cycle_uses_active_model_efforts() {
 
     let expected = [
         ThinkingConfig::Adaptive,
-        ThinkingConfig::Effort(Effort::Minimal),
         ThinkingConfig::Effort(Effort::Low),
         ThinkingConfig::Effort(Effort::Medium),
         ThinkingConfig::Effort(Effort::High),
+        ThinkingConfig::Effort(Effort::XHigh),
+        ThinkingConfig::Effort(Effort::Max),
         ThinkingConfig::Off,
     ];
     for thinking in expected {

@@ -315,7 +315,8 @@ impl Model {
                 crate::dialect::ANTHROPIC_ADAPTIVE.supported.to_vec()
             }
             "anthropic" | "google" | "ollama" | "llama-cpp" => Effort::ALL.to_vec(),
-            "openai" | "synthetic" => crate::dialect::STANDARD.supported.to_vec(),
+            "openai" => crate::types::openai_dialect(&self.id).supported.to_vec(),
+            "synthetic" => crate::dialect::STANDARD.supported.to_vec(),
             "copilot" => crate::providers::copilot::thinking_efforts(self),
             "mistral" => crate::dialect::HIGH_ONLY.supported.to_vec(),
             "zai" => crate::dialect::GLM.supported.to_vec(),
