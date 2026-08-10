@@ -301,6 +301,7 @@ impl App {
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let (mode_label, mode_style) = self.mode_label();
+        let subscription_usage = self.subscription_usage.load();
         let ctx = StatusBarContext {
             status: &self.status,
             mode_label,
@@ -320,10 +321,10 @@ impl App {
             auto_scroll: chat.auto_scroll(),
             chat_name,
             retry_info: self.retry_info.as_ref(),
-            thinking_label: self.state.thinking.status_label(),
+            thinking: self.state.thinking.level_label(&self.state.model),
             fast: self.state.fast,
-            workflow: self.state.workflow,
             restoring: self.restoring.load(Ordering::Relaxed),
+            subscription_usage: &subscription_usage,
         };
         self.status_bar.view(frame, status_area, &ctx);
     }

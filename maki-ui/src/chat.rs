@@ -348,6 +348,10 @@ impl Chat {
         self.messages_panel.tool_done(event);
     }
 
+    pub fn last_assistant_text(&self) -> Option<&str> {
+        self.messages_panel.last_assistant_text()
+    }
+
     #[cfg(test)]
     pub fn message_count(&self) -> usize {
         self.messages_panel.message_count()

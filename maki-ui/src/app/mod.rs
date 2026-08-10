@@ -44,6 +44,7 @@ use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
 use crate::components::scrollbar;
 use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::status_bar::StatusBar;
+use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::usage_modal::{UsageFetchState, UsageModal};
 use crate::components::{
@@ -175,6 +176,7 @@ pub struct App {
 
     pub(crate) storage: StateDir,
     pub(crate) usage_slot: Arc<ArcSwapOption<UsageFetchState>>,
+    pub(crate) subscription_usage: Arc<ArcSwap<SubscriptionUsage>>,
     pub(crate) shared_history: Option<SharedMessages>,
     pub(crate) btw_system: Option<Arc<ArcSwap<String>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
@@ -209,6 +211,7 @@ impl App {
         permissions: Arc<PermissionManager>,
         custom_commands: Arc<[maki_agent::command::CustomCommand]>,
         lua_event_handle: EventHandle,
+        subscription_usage: Arc<ArcSwap<SubscriptionUsage>>,
     ) -> Self {
         scrollbar::set_enabled(ui_config.scrollbar);
         let state = SessionState::from_session(session, model, &storage);
@@ -266,6 +269,7 @@ impl App {
             last_esc: None,
             storage,
             usage_slot: Arc::new(ArcSwapOption::empty()),
+            subscription_usage,
             shared_history: None,
             btw_system: None,
             image_paste_rx: vec![],
@@ -1556,6 +1560,12 @@ impl App {
     /// auth retry. Drives the `needs_input` session status.
     pub(crate) fn awaiting_input(&self) -> bool {
         self.permission_prompt.is_open() || self.pending_input != PendingInput::None
+    }
+
+    /// Main chat only. Subagent chats hold their own replies, and the one the
+    /// user is waiting on is always the main conversation's.
+    pub(crate) fn last_assistant_text(&self) -> Option<&str> {
+        self.chats.first()?.last_assistant_text()
     }
 
     pub fn has_modal_overlay(&self) -> bool {

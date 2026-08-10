@@ -1,14 +1,15 @@
 use std::borrow::Cow;
 use std::env;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::subscription_usage::SubscriptionUsage;
 use super::{RetryInfo, Status};
 
 use crate::animation::spinner_frame;
 use crate::theme;
 
-use maki_providers::{ModelPricing, TokenUsage, format_tokens};
+use maki_providers::{ModelPricing, ProviderUsage, TokenUsage, UsageLimit, format_tokens};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -16,7 +17,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 const FAST_LABEL: &str = " [fast]";
-const WORKFLOW_LABEL: &str = " [workflow]";
+const CLAUDE_ICON: &str = "\u{ec82}";
+const OPENAI_ICON: &str = "\u{ec81}";
+const RESET_ICON: &str = "\u{eb37}";
+const WARNING_PERCENTAGE: u32 = 85;
 
 pub struct UsageStats<'a> {
     pub global_usage: &'a TokenUsage,
@@ -36,10 +40,11 @@ pub struct StatusBarContext<'a> {
     pub auto_scroll: bool,
     pub chat_name: Option<&'a str>,
     pub retry_info: Option<&'a RetryInfo>,
-    pub thinking_label: Option<Cow<'static, str>>,
+    /// Active thinking level, e.g. `adaptive` or `high`. `None` hides the badge.
+    pub thinking: Option<Cow<'static, str>>,
     pub fast: bool,
-    pub workflow: bool,
     pub restoring: bool,
+    pub subscription_usage: &'a SubscriptionUsage,
 }
 
 pub struct StatusBar {
@@ -114,6 +119,12 @@ impl StatusBar {
         }
 
         left_spans.push(Span::styled(format!(" {}", ctx.mode_label), ctx.mode_style));
+        if let Some(level) = &ctx.thinking {
+            left_spans.push(Span::styled(
+                format!(" [{level}]"),
+                theme::current().status_dim,
+            ));
+        }
 
         if let Some(name) = ctx.chat_name {
             left_spans.push(Span::styled(
@@ -163,22 +174,12 @@ impl StatusBar {
                 ));
                 right_spans.push(Span::raw("  "));
                 right_spans.push(Span::styled(
-                    ctx.model_id.to_string(),
+                    compact_model_name(ctx.model_id).to_string(),
                     theme::current().status_dim,
                 ));
 
-                if let Some(ref label) = ctx.thinking_label {
-                    right_spans.push(Span::styled(
-                        format!(" [{label}]"),
-                        theme::current().status_dim,
-                    ));
-                }
-
                 if ctx.fast {
                     right_spans.push(Span::styled(FAST_LABEL, theme::current().status_dim));
-                }
-                if ctx.workflow {
-                    right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
                 }
 
                 let context_text = format!(
@@ -216,6 +217,16 @@ impl StatusBar {
             ));
         }
 
+        let quota_spans = quota_spans(ctx.subscription_usage, now_millis());
+        if !quota_spans.is_empty() {
+            let quota_width: usize = quota_spans.iter().map(Span::width).sum();
+            let other_width: usize = right_spans.iter().map(Span::width).sum();
+            if quota_width + other_width > usize::from(area.width) {
+                right_spans.clear();
+            }
+            right_spans.splice(0..0, quota_spans);
+        }
+
         let [left_area, right_area] = Layout::horizontal([
             Constraint::Min(0),
             Constraint::Length(right_spans.iter().map(|s| s.width() as u16).sum()),
@@ -227,6 +238,83 @@ impl StatusBar {
             Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
             right_area,
         );
+    }
+}
+
+fn compact_model_name(model: &str) -> &str {
+    model.rsplit_once('/').map_or(model, |(_, name)| name)
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn quota_spans(usage: &SubscriptionUsage, now: u64) -> Vec<Span<'static>> {
+    let providers = [
+        (CLAUDE_ICON, usage.anthropic.as_ref()),
+        (OPENAI_ICON, usage.openai.as_ref()),
+    ];
+    let visible = providers
+        .iter()
+        .filter(|(_, usage)| usage.is_some_and(|usage| has_visible_limit(usage, now)))
+        .count();
+    let mut spans = Vec::new();
+    for (icon, usage) in providers {
+        let Some(usage) = usage else { continue };
+        let Some(limit) = weekly_limit(usage, now) else {
+            continue;
+        };
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        if visible > 1 {
+            spans.push(Span::styled(
+                format!("{icon} "),
+                theme::current().status_dim,
+            ));
+        }
+        let percentage = limit.percentage.unwrap_or_default();
+        let reset = compact_reset(limit.reset_at.unwrap_or_default() - now);
+        let text = format!("{percentage}% {RESET_ICON}{reset}");
+        let style = if percentage > WARNING_PERCENTAGE {
+            theme::current().error
+        } else {
+            theme::current().status_dim
+        };
+        spans.push(Span::styled(text, style));
+    }
+    if !spans.is_empty() {
+        spans.push(Span::raw("  "));
+    }
+    spans
+}
+
+fn has_visible_limit(usage: &ProviderUsage, now: u64) -> bool {
+    weekly_limit(usage, now).is_some()
+}
+
+fn weekly_limit(usage: &ProviderUsage, now: u64) -> Option<&UsageLimit> {
+    usage
+        .limits
+        .iter()
+        .find(|limit| limit.label.starts_with("Current week") && visible_limit(limit, now))
+}
+
+fn visible_limit(limit: &UsageLimit, now: u64) -> bool {
+    limit.percentage.is_some() && limit.reset_at.is_some_and(|reset| reset > now)
+}
+
+fn compact_reset(milliseconds: u64) -> String {
+    let minutes = milliseconds.div_ceil(60_000);
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else if minutes < 24 * 60 {
+        format!("{}h", minutes.div_ceil(60))
+    } else {
+        format!("{}d", minutes.div_ceil(24 * 60))
     }
 }
 
@@ -328,6 +416,67 @@ mod tests {
     fn detect_branch_cases(head: Option<&str>, expected: Option<&str>) {
         let (_dir, path) = tmp_with_head(head);
         assert_eq!(detect_branch(&path), expected.map(String::from));
+    }
+
+    #[test_case("chatgpt-subscription/gpt-5.6-sol", "gpt-5.6-sol")]
+    #[test_case("claude-opus-5", "claude-opus-5")]
+    fn compact_model_name_cases(model: &str, expected: &str) {
+        assert_eq!(compact_model_name(model), expected);
+    }
+
+    fn limit(label: &str, percentage: Option<u32>, reset_at: Option<u64>) -> UsageLimit {
+        UsageLimit {
+            label: label.into(),
+            percentage,
+            reset_at,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn quota_formatting_shows_weekly_only_without_window_label() {
+        let now = 1_000_000;
+        let usage = SubscriptionUsage {
+            anthropic: Some(ProviderUsage {
+                plan: None,
+                limits: vec![
+                    limit(
+                        "Current week (all models)",
+                        Some(20),
+                        Some(now + 86_400_000),
+                    ),
+                    limit("Current session", Some(65), Some(now + 3_600_000)),
+                ],
+            }),
+            openai: Some(ProviderUsage {
+                plan: None,
+                limits: vec![limit("Current week", Some(90), Some(now + 604_800_000))],
+            }),
+        };
+        let spans = quota_spans(&usage, now);
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(
+            text,
+            format!("{CLAUDE_ICON} 20% {RESET_ICON}1d  {OPENAI_ICON} 90% {RESET_ICON}7d  ")
+        );
+        assert_eq!(spans[4].style, theme::current().error);
+    }
+
+    #[test]
+    fn quota_formatting_omits_session_and_invalid_weekly_limits() {
+        let now = 1_000_000;
+        let usage = SubscriptionUsage {
+            anthropic: None,
+            openai: Some(ProviderUsage {
+                plan: None,
+                limits: vec![
+                    limit("Current session", Some(40), Some(now + 30 * 60_000)),
+                    limit("Current week", None, Some(now + 100_000)),
+                    limit("Current week expired", Some(20), Some(now)),
+                ],
+            }),
+        };
+        assert!(quota_spans(&usage, now).is_empty());
     }
 
     #[test]

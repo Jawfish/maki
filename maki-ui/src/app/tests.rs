@@ -3,6 +3,7 @@ use crate::agent::shared_queue;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{Bind, KeybindContext, key as kb};
+use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
@@ -62,6 +63,7 @@ fn build_app_with_lua(
         )),
         Arc::from([]),
         maki_lua::EventHandle::disconnected_for_test(),
+        Arc::new(ArcSwap::from_pointee(SubscriptionUsage::default())),
     )
 }
 
@@ -3421,7 +3423,7 @@ fn bash_prefix_overrides_mode() {
     );
 
     app.input_box.set_input("ls".into());
-    assert_eq!(&*app.mode_label().0, "[BUILD]");
+    assert_eq!(&*app.mode_label().0, "[B]");
 }
 
 #[test]

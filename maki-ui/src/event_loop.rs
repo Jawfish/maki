@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use color_eyre::Result;
-use color_eyre::eyre::{Context, eyre};
-
+use color_eyre::{
+    Result,
+    eyre::{Context, eyre},
+};
 use crossterm::event::{
     Event, KeyEventKind, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
 };
@@ -40,6 +41,7 @@ use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg, QueuedMessage, SubmitOutcome};
 use crate::color_compat;
 use crate::components::input::Submission;
+use crate::components::subscription_usage::{self, SubscriptionUsage};
 use crate::components::usage_modal::UsageFetchState;
 use crate::components::{Action, ExitRequest, Status};
 use crate::input::InputReader;
@@ -54,6 +56,8 @@ const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
+const NEEDS_INPUT_BODY: &str = "Needs your input";
+const FINISHED_BODY: &str = "Finished responding";
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -111,6 +115,19 @@ impl SessionStatus {
     }
 }
 
+/// The reply itself is the useful part of a notification, so the generic
+/// lines below are only reached when there is nothing to quote: a turn that
+/// answered with tool calls alone, or a run parked on a prompt.
+fn notify_body(app: &App, status: SessionStatus) -> String {
+    if status == SessionStatus::NeedsInput {
+        return NEEDS_INPUT_BODY.into();
+    }
+    app.last_assistant_text()
+        .map(crate::notify::snippet)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| FINISHED_BODY.into())
+}
+
 fn claim_idle_wake(
     status: SessionStatus,
     claim: impl FnOnce() -> Vec<Message>,
@@ -165,6 +182,7 @@ struct SpawnCtx {
     model_slot: Arc<ArcSwap<ModelSlot>>,
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
+    subscription_usage: Arc<ArcSwap<SubscriptionUsage>>,
 }
 
 impl SpawnCtx {
@@ -199,6 +217,7 @@ impl SpawnCtx {
             permissions,
             Arc::clone(&self.custom_commands),
             self.lua_event_handle.clone(),
+            Arc::clone(&self.subscription_usage),
         );
         handles.apply_to_app(&mut app);
         if resumed {
@@ -224,8 +243,12 @@ pub(crate) struct EventLoop<'t> {
     input: InputReader,
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
+    /// Tracks the terminal window's OS-level focus (crossterm focus events),
+    /// separate from `focused`, which tracks the in-app session tab.
+    os_focused: bool,
     ui_action_rx: flume::Receiver<UiAction>,
     _model_fetch_task: smol::Task<()>,
+    _subscription_usage_task: smol::Task<()>,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -366,6 +389,7 @@ impl<'t> EventLoop<'t> {
         }));
         let bg = spawn_model_fetch(&model_slot, timeouts);
         let storage_writer = Arc::new(StorageWriter::new(storage.clone(), bg.warn_tx.clone()));
+        let subscription_usage = subscription_usage::spawn(timeouts);
 
         let ctx = SpawnCtx {
             storage,
@@ -384,6 +408,7 @@ impl<'t> EventLoop<'t> {
             model_slot,
             available_models: bg.available,
             storage_writer,
+            subscription_usage: subscription_usage.usage,
         };
 
         let mut runtimes: Vec<SessionRuntime> = sessions
@@ -416,8 +441,10 @@ impl<'t> EventLoop<'t> {
             input: InputReader::spawn(),
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
+            os_focused: true,
             ui_action_rx,
             _model_fetch_task: bg.task,
+            _subscription_usage_task: subscription_usage.task,
         })
     }
 
@@ -634,12 +661,21 @@ impl<'t> EventLoop<'t> {
 
     fn emit_status_changes(&mut self) {
         let handle = &self.ctx.lua_event_handle;
+        let os_focused = self.os_focused;
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             let status = SessionStatus::of(&rt.app);
             if status == rt.last_status {
                 continue;
             }
+            let finished = rt.last_status == SessionStatus::Working
+                && matches!(status, SessionStatus::Idle | SessionStatus::NeedsInput);
             rt.last_status = status;
+            if finished && !os_focused && rt.app.ui_config.notify {
+                crate::notify::send(
+                    rt.app.state.session.title.clone(),
+                    notify_body(&rt.app, status),
+                );
+            }
             handle.fire_autocmd(
                 "SessionStatusChanged",
                 json!({
@@ -883,6 +919,14 @@ impl<'t> EventLoop<'t> {
             Event::Key(_) => (None, None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
+            Event::FocusGained => {
+                self.os_focused = true;
+                (None, None)
+            }
+            Event::FocusLost => {
+                self.os_focused = false;
+                (None, None)
+            }
             _ => (None, None),
         }
     }
