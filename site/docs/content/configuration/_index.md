@@ -25,8 +25,8 @@ maki.setup({
         mouse_scroll_lines = 5,
         theme = "tokyonight",
         tool_output_lines = {
-            bash = 8,
-            read = 5,
+            bash = 4,
+            read = 3,
         },
     },
     agent = {
@@ -71,6 +71,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
+| `notify` | bool | `true` | - | Send a desktop notification when a turn finishes or needs input while the terminal window is unfocused |
 
 ### `ui.theme`
 
@@ -86,15 +87,15 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 
 | Field | Default |
 |-------|---------|
-| `bash` | 5 |
-| `code_execution` | 5 |
-| `task` | 5 |
-| `index` | 3 |
-| `grep` | 3 |
-| `read` | 3 |
-| `write` | 7 |
-| `web` | 3 |
-| `other` | 3 |
+| `bash` | 1 |
+| `code_execution` | 1 |
+| `task` | 1 |
+| `index` | 1 |
+| `grep` | 1 |
+| `read` | 1 |
+| `write` | 1 |
+| `web` | 1 |
+| `other` | 1 |
 
 ### `agent`
 

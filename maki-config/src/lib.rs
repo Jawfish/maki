@@ -328,6 +328,7 @@ pub struct UiFileConfig {
     pub typewriter_ms_per_char: Option<u64>,
     pub mouse_scroll_lines: Option<u32>,
     pub show_thinking: Option<bool>,
+    pub notify: Option<bool>,
     pub theme: Option<String>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
@@ -344,6 +345,7 @@ impl UiFileConfig {
             typewriter_ms_per_char,
             mouse_scroll_lines,
             show_thinking,
+            notify,
             theme,
             max_input_lines
         );
@@ -837,6 +839,12 @@ pub struct UiConfig {
     )]
     pub show_thinking: bool,
 
+    #[config(
+        default = true,
+        desc = "Send a desktop notification when a turn finishes or needs input while the terminal window is unfocused"
+    )]
+    pub notify: bool,
+
     #[config(skip, default = "None")]
     pub theme: Option<String>,
 
@@ -860,6 +868,7 @@ impl UiConfig {
             mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
             max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
             show_thinking: f.show_thinking.unwrap_or(true),
+            notify: f.notify.unwrap_or(true),
             theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }
@@ -888,15 +897,15 @@ pub struct ToolOutputLines {
 
 impl ToolOutputLines {
     pub const DEFAULT: Self = Self {
-        bash: 5,
-        code_execution: 5,
-        task: 5,
-        index: 3,
-        grep: 3,
-        read: 3,
-        write: 7,
-        web: 3,
-        other: 3,
+        bash: 1,
+        code_execution: 1,
+        task: 1,
+        index: 1,
+        grep: 1,
+        read: 1,
+        write: 1,
+        web: 1,
+        other: 1,
     };
 
     pub const FIELD_DEFAULTS: &[(&'static str, usize)] = &[

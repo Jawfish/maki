@@ -209,6 +209,20 @@ const MAX_SCRIPT_LINES: usize = 2000;
 const EXPAND_NOTICE: &str = "click to expand";
 const DIVIDER_LINE: &str = "──────";
 
+fn expanded_tool_output_lines() -> maki_config::ToolOutputLines {
+    maki_config::ToolOutputLines {
+        bash: 5,
+        code_execution: 5,
+        task: 5,
+        index: 3,
+        grep: 3,
+        read: 3,
+        write: 7,
+        web: 3,
+        other: 3,
+    }
+}
+
 fn event_ctx(reg: &Arc<ToolRegistry>) -> (ToolContext, flume::Receiver<maki_agent::Envelope>) {
     let (tx, rx) = flume::unbounded::<maki_agent::Envelope>();
     let event_tx = maki_agent::EventSender::new(tx, 0);
@@ -218,6 +232,7 @@ fn event_ctx(reg: &Arc<ToolRegistry>) -> (ToolContext, flume::Receiver<maki_agen
         Some(SCRIPT_TOOL_ID),
     );
     ctx.registry = Arc::clone(reg);
+    ctx.tool_output_lines = expanded_tool_output_lines();
     (ctx, rx)
 }
 
@@ -356,7 +371,7 @@ fn restore_lines_with(code: &str, output: &str, is_error: bool, clicks: Vec<usiz
             output: output.into(),
             input: serde_json::json!({ "code": code }),
             is_error,
-            tool_output_lines: maki_config::ToolOutputLines::default(),
+            tool_output_lines: expanded_tool_output_lines(),
             theme_gen: None,
             clicks,
             state: None,
