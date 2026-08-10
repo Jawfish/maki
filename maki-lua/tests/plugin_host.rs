@@ -4006,6 +4006,41 @@ mod read_tool_required_params {
         assert_eq!(disabled, "1: one\n2: two");
     }
 
+    const HEADER_FIRST_PATH: &str = "/tmp/one.lua";
+    const HEADER_SECOND_PATH: &str = "/tmp/two.lua";
+    const HEADER_FIRST_TAG: &str = "0123456789abcdef";
+    const HEADER_SECOND_TAG: &str = "fedcba9876543210";
+
+    /// The header is the only place a batched edit says which files it
+    /// touches, so every section path has to show up there. Lua headers
+    /// resolve on the plugin thread, so the future has to be awaited.
+    fn edit_header(reg: &ToolRegistry, input: &Value) -> String {
+        let inv = reg
+            .get("edit")
+            .expect("edit registered")
+            .try_parse(input)
+            .expect("edit input should parse");
+        smol::block_on(inv.start_header()).text()
+    }
+
+    #[test]
+    fn edit_header_lists_every_section_path() {
+        let (reg, _host) = builtins_host();
+        let section =
+            |path: &str, tag: &str| json!({ "path": path, "tag": tag, "patch": "PUT 1.=1:\n+new" });
+        let single = json!({ "sections": [section(HEADER_FIRST_PATH, HEADER_FIRST_TAG)] });
+        assert_eq!(edit_header(&reg, &single), HEADER_FIRST_PATH);
+
+        let both = json!({ "sections": [
+            section(HEADER_FIRST_PATH, HEADER_FIRST_TAG),
+            section(HEADER_SECOND_PATH, HEADER_SECOND_TAG),
+        ] });
+        assert_eq!(
+            edit_header(&reg, &both),
+            format!("{HEADER_FIRST_PATH}, {HEADER_SECOND_PATH}")
+        );
+    }
+
     #[test]
     fn hashline_edit_chains_tags_and_returns_diff() {
         let (reg, _host) = builtins_host();

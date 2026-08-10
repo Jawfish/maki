@@ -26,23 +26,6 @@ local NO_MATCH = fr.NO_MATCH
 local MULTIPLE_MATCHES = fr.MULTIPLE_MATCHES
 local EMPTY_OLD_STRING = fr.EMPTY_OLD_STRING
 
-
-case("edit_header_shows_single_path", function()
-  local header = maki.api.get_tool("edit").header({
-    sections = { { path = "/tmp/example.lua", tag = "0123456789abcdef", patch = "PUT 1.=1:\n+new" } },
-  })
-  eq(header[1][1], "/tmp/example.lua")
-end)
-
-case("edit_header_shows_all_paths", function()
-  local header = maki.api.get_tool("edit").header({
-    sections = {
-      { path = "/tmp/one.lua", tag = "0123456789abcdef", patch = "PUT 1.=1:\n+one" },
-      { path = "/tmp/two.lua", tag = "fedcba9876543210", patch = "PUT 1.=1:\n+two" },
-    },
-  })
-  eq(header[1][1], "/tmp/one.lua, /tmp/two.lua")
-end)
 -- fuzzy_replace unit tests
 
 case("exact_match", function()
