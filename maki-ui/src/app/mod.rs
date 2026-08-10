@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
+use crate::app::workspace_checkpoints::WorkspaceCheckpoints;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
 use crate::clipboard::ClipboardState;
@@ -56,7 +57,6 @@ use crate::components::{
 };
 use crate::image;
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
-use crate::app::workspace_checkpoints::WorkspaceCheckpoints;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use maki_agent::permissions::PermissionManager;
@@ -67,7 +67,7 @@ use maki_agent::{
 };
 use maki_config::UiConfig;
 use maki_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader, WinView};
-use maki_providers::{ContentBlock, Model, Role, ThinkingConfig, Timeouts, add_cost};
+use maki_providers::{ContentBlock, ErrorReport, Model, Role, ThinkingConfig, Timeouts, add_cost};
 use maki_storage::StateDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
@@ -90,8 +90,9 @@ pub(crate) const RESTORE_RUN_ID: u64 = u64::MAX;
 pub(crate) const MAIN_CHAT: usize = 0;
 const FLASH_CANCEL: &str = "Press esc again to cancel...";
 const FLASH_REWIND: &str = "Press esc again to rewind...";
-const AUTH_EXPIRED_MSG: &str =
-    "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
+/// Hint appended to an error block that kept something back.
+const ERROR_DETAIL_HINT: &str = "for detail";
+const NO_ERROR_DETAIL: &str = "No detail to show";
 const FLASH_NO_PLAN: &str = "No plan file";
 const FLASH_THINKING_SHOWN: &str = "Thinking shown";
 const FLASH_THINKING_HIDDEN: &str = "Thinking hidden";
@@ -130,6 +131,10 @@ pub(super) enum PendingInput {
     #[default]
     None,
     AuthRetry {
+        subagent_id: Option<String>,
+    },
+    /// A transient failure: enter alone sends the same turn again.
+    Retry {
         subagent_id: Option<String>,
     },
 }
@@ -171,6 +176,8 @@ pub struct App {
     pub(crate) exit_on_done: bool,
     pub(crate) queue: MessageQueue,
     recoverable_queue: Vec<String>,
+    /// The last failure, kept only while its detail is still unread.
+    last_error: Option<Box<ErrorReport>>,
     pub(super) turn_telemetry: TurnTelemetry,
     /// A run that ends while the terminal is unfocused, or after the user has
     /// been quiet for [`IDLE_GAP`], owes them this block when they return.
@@ -279,6 +286,7 @@ impl App {
             exit_on_done: false,
             queue: MessageQueue::default(),
             recoverable_queue: Vec::new(),
+            last_error: None,
             turn_telemetry: TurnTelemetry::default(),
             os_focused: true,
             last_interaction: Instant::now(),
@@ -565,6 +573,10 @@ impl App {
                 }
                 .into(),
             );
+            return Some(vec![]);
+        }
+        if key::ERROR_DETAIL.matches(key) {
+            self.show_error_detail();
             return Some(vec![]);
         }
         if key::PREV_CHAT.matches(key) {
@@ -962,7 +974,7 @@ impl App {
 
     pub(crate) fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
         match std::mem::take(&mut self.pending_input) {
-            PendingInput::AuthRetry { subagent_id } => {
+            PendingInput::AuthRetry { subagent_id } | PendingInput::Retry { subagent_id } => {
                 self.send_to_agent(subagent_id.as_deref(), String::new());
                 return vec![];
             }
@@ -1153,6 +1165,12 @@ impl App {
                 };
                 self.chats[sub_idx].mark_finished(role, text);
             }
+            if e.is_error {
+                self.last_error = Some(Box::new(ErrorReport::for_tool(
+                    &e.tool,
+                    &e.output.as_text(),
+                )));
+            }
             self.sync_task_picker();
         }
 
@@ -1219,15 +1237,10 @@ impl App {
         }
 
         if let ChatEventResult::AuthRequired = result {
-            self.chats[chat_idx].push(DisplayMessage::new(
-                DisplayRole::Error,
-                AUTH_EXPIRED_MSG.into(),
-            ));
+            let report = ErrorReport::auth_expired();
+            self.push_error_block(chat_idx, &report);
             if chat_idx != 0 {
-                self.main_chat().push(DisplayMessage::new(
-                    DisplayRole::Error,
-                    AUTH_EXPIRED_MSG.into(),
-                ));
+                self.push_error_block(MAIN_CHAT, &report);
             }
             self.pending_input = PendingInput::AuthRetry { subagent_id };
             return vec![];
@@ -1247,17 +1260,23 @@ impl App {
                         self.exit_request = ExitRequest::Success;
                     }
                 }
-                ChatEventResult::Error(message) => {
-                    self.status = Status::error(message.clone());
+                ChatEventResult::Error(report) => {
+                    let primary = report.primary_line();
+                    self.status = Status::error(primary.clone());
                     self.status_bar.clear_flash();
                     self.subagent_answers.clear();
-                    self.terminalize_turn(&message);
+                    self.terminalize_turn(&primary);
+                    self.push_error_block(MAIN_CHAT, &report);
+                    if report.is_transient() {
+                        self.pending_input = PendingInput::Retry { subagent_id: None };
+                    }
+                    self.last_error = Some(report);
                     self.recoverable_queue = self.queue.text_messages();
                     self.queue.clear();
                     self.chat_index.clear();
                     self.fire_session_autocmd(
                         "TurnError",
-                        serde_json::json!({ "message": message }),
+                        serde_json::json!({ "message": primary }),
                     );
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Error;
@@ -1687,6 +1706,30 @@ impl App {
             chat.fail_in_progress_with_message(message.into());
         }
         self.sync_task_picker();
+    }
+
+    /// Renders the three parts of a failure into the transcript, plus the way
+    /// to reach whatever the report held back.
+    fn push_error_block(&mut self, chat_idx: usize, report: &ErrorReport) {
+        let mut lines = report.lines();
+        if report.detail().is_some() {
+            lines.push(format!("{} {ERROR_DETAIL_HINT}", key::ERROR_DETAIL.label));
+        }
+        self.chats[chat_idx].push(DisplayMessage::new(DisplayRole::Error, lines.join("\n")));
+    }
+
+    /// Unfolds the underlying text of the last failure, once.
+    fn show_error_detail(&mut self) {
+        let Some(detail) = self
+            .last_error
+            .take()
+            .and_then(|e| e.detail().map(str::to_owned))
+        else {
+            self.flash(NO_ERROR_DETAIL.into());
+            return;
+        };
+        self.main_chat()
+            .push(DisplayMessage::new(DisplayRole::Error, detail));
     }
 
     /// Ends a run with a structural closure block, built from the telemetry

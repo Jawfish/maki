@@ -1021,8 +1021,8 @@ impl EventPump {
                 let result = mem::take(&mut self.result_text);
                 self.emit_turn_result(false, result, *num_turns, *usage)?;
             }
-            AgentEvent::Error { message } => {
-                self.emit_turn_result(true, message.clone(), 0, TokenUsage::default())?;
+            AgentEvent::Error { report } => {
+                self.emit_turn_result(true, report.one_line(), 0, TokenUsage::default())?;
             }
         }
         Ok(())

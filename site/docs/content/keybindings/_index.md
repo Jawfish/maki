@@ -22,6 +22,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+T` | Toggle plan panel |
 | `Ctrl+X` | Open tasks |
 | `Ctrl+R` | Review a code change |
+| `Ctrl+L` | Show detail of the last error |
 | `Ctrl+Y` | Show / hide thinking |
 
 ## Editing

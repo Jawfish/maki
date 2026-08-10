@@ -17,7 +17,7 @@ use maki_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
 use maki_agent::{AgentEvent, BufferSnapshot, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_config::{ToolKey, ToolOutputLines, UiConfig};
 use maki_lua::WinView;
-use maki_providers::{ContentBlock, Message, Role};
+use maki_providers::{ContentBlock, ErrorReport, Message, Role};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -33,7 +33,7 @@ pub enum ChatEventResult {
         text: String,
         image_count: usize,
     },
-    Error(String),
+    Error(Box<ErrorReport>),
     PermissionRequest {
         id: String,
         tool: ToolKey,
@@ -126,9 +126,9 @@ impl Chat {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
             }
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { report } => {
                 self.messages_panel.flush();
-                return ChatEventResult::Error(message);
+                return ChatEventResult::Error(report);
             }
             AgentEvent::PermissionRequest { id, tool, scopes } => {
                 return ChatEventResult::PermissionRequest { id, tool, scopes };

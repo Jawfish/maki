@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use flume::Sender;
 use maki_config::ToolKey;
-use maki_providers::{AgentError, ContentBlock, Message, Role, StopReason, TokenUsage};
+use maki_providers::{
+    AgentError, ContentBlock, ErrorReport, Message, Role, StopReason, TokenUsage,
+};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -565,8 +567,12 @@ pub enum AgentEvent {
         message: String,
         delay_ms: u64,
     },
+    /// Carries the three parts (what failed, cause, next action) so every
+    /// surface renders the same wording. Serializes as `message` plus
+    /// `transient` for non-interactive clients.
     Error {
-        message: String,
+        #[serde(flatten)]
+        report: Box<ErrorReport>,
     },
     PermissionRequest {
         id: String,
@@ -601,6 +607,14 @@ pub enum AgentEvent {
         total: u32,
         cache: u32,
     },
+}
+
+impl AgentEvent {
+    pub fn error(error: &AgentError) -> Self {
+        Self::Error {
+            report: Box::new(ErrorReport::from_agent_error(error)),
+        }
+    }
 }
 
 /// Append-only buffer for streaming tool output to the UI. Writers append

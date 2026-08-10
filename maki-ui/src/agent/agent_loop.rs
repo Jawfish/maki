@@ -423,9 +423,7 @@ impl AgentLoop {
             }
             e => {
                 error!(error = %e, "agent error");
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: e.user_message(),
-                });
+                let _ = event_tx.send(AgentEvent::error(&e));
             }
         }
     }

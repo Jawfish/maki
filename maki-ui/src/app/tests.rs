@@ -1,10 +1,10 @@
 use super::*;
 use crate::agent::shared_queue;
+use crate::app::workspace_checkpoints::NO_SNAPSHOT_ERR;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{Bind, KeybindContext, key as kb};
 use crate::components::marker::State;
-use crate::app::workspace_checkpoints::NO_SNAPSHOT_ERR;
 use crate::components::rewind_picker::RewindMode;
 use crate::components::subscription_usage::SubscriptionUsage;
 use crate::components::{ExitRequest, key, test_model};
@@ -18,7 +18,7 @@ use maki_agent::{
 };
 use maki_config::{PermissionsConfig, UiConfig};
 use maki_lua::{HintReader, KeymapReader, LuaCommandInfo, LuaCommandReader};
-use maki_providers::{ContentBlock, Effort, Message, Role, TokenUsage};
+use maki_providers::{AgentError, ContentBlock, Effort, ErrorReport, Message, Role, TokenUsage};
 use maki_storage::sessions::{StoredMode, StoredThinking};
 use ratatui::layout::Rect;
 use std::env;
@@ -30,6 +30,27 @@ use test_case::test_case;
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TASK_ID: &str = "task1";
 const CWD: &str = "/tmp/project";
+/// A permanent failure, so the tests that follow it are not steered by the
+/// retry affordance a transient one would add.
+const TEST_ERROR_STATUS: u16 = 400;
+const TEST_ERROR_BODY: &str = "boom";
+const TRANSIENT_ERROR_STATUS: u16 = 429;
+const SECRET_TOKEN: &str = "sk-ant-api03-abcdefghijklmnop";
+
+fn api_error(status: u16) -> AgentError {
+    AgentError::Api {
+        status,
+        message: TEST_ERROR_BODY.into(),
+    }
+}
+
+fn error_event(status: u16) -> AgentEvent {
+    AgentEvent::error(&api_error(status))
+}
+
+fn error_primary(status: u16) -> String {
+    ErrorReport::from_agent_error(&api_error(status)).primary_line()
+}
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone { area, zone });
@@ -266,7 +287,7 @@ fn ctrl_c_quits_when_input_empty() {
 }
 
 #[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None }, ExitRequest::Success ; "done_exits_success")]
-#[test_case(AgentEvent::Error { message: "boom".into() }, ExitRequest::Error ; "error_exits_error")]
+#[test_case(error_event(TEST_ERROR_STATUS), ExitRequest::Error ; "error_exits_error")]
 fn exit_on_done_flag_triggers_exit(event: AgentEvent, expected: ExitRequest) {
     let mut app = test_app();
     app.exit_on_done = true;
@@ -528,9 +549,7 @@ fn cancel_app(app: &mut App) {
 }
 
 fn error_app(app: &mut App) {
-    app.update(agent_msg(AgentEvent::Error {
-        message: "boom".into(),
-    }));
+    app.update(agent_msg(error_event(TEST_ERROR_STATUS)));
 }
 
 fn cmd(name: &str) -> ParsedCommand {
@@ -2499,8 +2518,9 @@ fn auth_required_in_subagent_shows_in_both_chats() {
         Some("research"),
     ));
 
-    assert_eq!(app.chats[1].last_message_text(), AUTH_EXPIRED_MSG);
-    assert_eq!(app.chats[0].last_message_text(), AUTH_EXPIRED_MSG);
+    let expected = ErrorReport::auth_expired().lines().join("\n");
+    assert_eq!(app.chats[1].last_message_text(), expected);
+    assert_eq!(app.chats[0].last_message_text(), expected);
     assert!(matches!(
         app.pending_input,
         PendingInput::AuthRetry { subagent_id: Some(ref id) } if id == "sub1"
@@ -2770,7 +2790,7 @@ fn streaming_app_with_history() -> App {
     AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None } ; "stale_done"
 )]
 #[test_case(
-    AgentEvent::Error { message: "timeout".into() } ; "stale_error"
+    error_event(TEST_ERROR_STATUS) ; "stale_error"
 )]
 fn checkpoint_after_cancel_persists_the_cancelled_turn(event: AgentEvent) {
     let mut app = streaming_app_with_history();
@@ -2865,9 +2885,7 @@ fn parent_error_refreshes_picker_and_persists_only_completed_children() {
     finish_subagent(&mut app, "task3", false);
     open_tasks_picker(&mut app);
 
-    app.update(agent_msg(AgentEvent::Error {
-        message: "boom".into(),
-    }));
+    app.update(agent_msg(error_event(TEST_ERROR_STATUS)));
 
     assert!(app.task_picker.is_open());
     assert_eq!(app.task_picker.item(2).unwrap().finished, Some(true));
@@ -2951,9 +2969,7 @@ fn active_shell_survives_agent_error_while_agent_and_child_tools_fail() {
         Some("research"),
     ));
 
-    app.update(agent_msg(AgentEvent::Error {
-        message: "provider overloaded".into(),
-    }));
+    app.update(agent_msg(error_event(TEST_ERROR_STATUS)));
 
     assert_eq!(app.chats[0].in_progress_count(), 1);
     assert_eq!(app.chats[1].in_progress_count(), 0);
@@ -3005,9 +3021,7 @@ fn error_event_matching_run_id_saves_session_and_queued_messages() {
     let mut app = streaming_app_with_history();
     app.queue_and_notify(queued_msg("next"));
 
-    app.update(agent_msg(AgentEvent::Error {
-        message: "boom".into(),
-    }));
+    app.update(agent_msg(error_event(TEST_ERROR_STATUS)));
     app.checkpoint();
 
     assert_eq!(app.state.session.messages().len(), 2);
@@ -3025,9 +3039,7 @@ fn error_event_matching_run_id_saves_session_and_queued_messages() {
 fn flush_restored_queue_drops_recovery_snapshot() {
     let mut app = streaming_app_with_history();
     app.queue_and_notify(queued_msg("next"));
-    app.update(agent_msg(AgentEvent::Error {
-        message: "boom".into(),
-    }));
+    app.update(agent_msg(error_event(TEST_ERROR_STATUS)));
     app.checkpoint();
     assert_eq!(app.state.session.meta.queued_messages, ["next"]);
 
@@ -3674,15 +3686,13 @@ fn agent_error_creates_synthetic_tool_done_with_message() {
     }))));
     assert_eq!(app.main_chat().in_progress_count(), 1);
 
-    let error_msg = "Provider is overloaded";
-    app.update(agent_msg(AgentEvent::Error {
-        message: error_msg.into(),
-    }));
+    let error_msg = error_primary(TEST_ERROR_STATUS);
+    app.update(agent_msg(error_event(TEST_ERROR_STATUS)));
 
     assert_eq!(app.main_chat().in_progress_count(), 0);
     let text = app.main_chat().last_message_text();
     assert!(
-        text.contains(error_msg),
+        text.contains(&error_msg),
         "tool output should contain error: {text}"
     );
 }
@@ -4443,4 +4453,37 @@ fn the_polish_flag_routes_the_block_through_the_weak_model() {
         app.chats[0].last_message_role(),
         Some(DisplayRole::Closure(_))
     ));
+}
+
+#[test_case(TRANSIENT_ERROR_STATUS, true  ; "transient_offers_retry")]
+#[test_case(TEST_ERROR_STATUS, false      ; "permanent_waits_for_the_user")]
+fn retry_is_offered_only_for_transient_failures(status: u16, expected: bool) {
+    let mut app = streaming_app_with_history();
+    app.update(agent_msg(error_event(status)));
+    assert_eq!(
+        matches!(app.pending_input, PendingInput::Retry { .. }),
+        expected
+    );
+}
+
+#[test]
+fn an_error_block_shows_three_parts_and_keeps_detail_folded() {
+    let mut app = streaming_app_with_history();
+    let error = AgentError::Api {
+        status: TEST_ERROR_STATUS,
+        message: format!("invalid x-api-key header {SECRET_TOKEN}"),
+    };
+    let report = ErrorReport::from_agent_error(&error);
+    app.update(agent_msg(AgentEvent::error(&error)));
+
+    let block = app.main_chat().last_message_text().to_owned();
+    assert!(block.contains(&report.primary_line()), "{block}");
+    assert!(block.contains(report.next_action()), "{block}");
+    assert!(block.contains(kb::ERROR_DETAIL.label), "{block}");
+    assert!(!block.contains(SECRET_TOKEN), "{block}");
+
+    app.update(Msg::Key(kb::ERROR_DETAIL.to_key_event()));
+    let detail = app.main_chat().last_message_text().to_owned();
+    assert_ne!(detail, block);
+    assert!(!detail.contains(SECRET_TOKEN), "{detail}");
 }

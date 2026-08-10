@@ -865,7 +865,7 @@ fn call_local_tool(
 #[cfg(test)]
 mod tests {
     use maki_agent::TurnCompleteEvent;
-    use maki_providers::Message;
+    use maki_providers::{AgentError, Message};
     use serde_json::json;
 
     use super::*;
@@ -949,9 +949,9 @@ mod tests {
         for event in [
             turn(tokens(100, 20), 0.25),
             turn(tokens(50, 10), 0.5),
-            AgentEvent::Error {
+            AgentEvent::error(&AgentError::Config {
                 message: IGNORED_ERROR.into(),
-            },
+            }),
             AgentEvent::Done {
                 usage: DONE_USAGE,
                 num_turns: 2,

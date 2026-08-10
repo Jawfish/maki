@@ -410,9 +410,10 @@ fn start_event_pump(
                     }
                     continue;
                 }
-                AgentEvent::Error { message } => {
+                AgentEvent::Error { report } => {
                     if let Some(id) = pending.lock().unwrap().take() {
-                        let error = AcpError::internal_error().data(Value::String(message));
+                        let error =
+                            AcpError::internal_error().data(Value::String(report.one_line()));
                         send(&out_tx, Response::<AgentResponse>::new(id, Err(error)));
                     }
                     continue;

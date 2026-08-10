@@ -1,8 +1,10 @@
 //! Provider error types with retry semantics.
 //! Retryable: 429, 5xx, IO, HTTP transport. Non-retryable: other 4xx, JSON parse, config,
-//! channel closed, user cancel. `user_message()` returns human-readable text for each variant.
+//! channel closed, user cancel. User-facing wording lives in [`crate::error_report`].
 
 use isahc::AsyncReadResponseExt;
+
+use crate::error_report::ErrorReport;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -90,25 +92,11 @@ impl AgentError {
         matches!(self, Self::Api { status, .. } if *status == 429 || *status == 401 || *status == 403)
     }
 
+    /// What failed, why, and what to do next, on one line. The wording
+    /// itself belongs to [`ErrorReport`], the single error-presentation
+    /// module.
     pub fn user_message(&self) -> String {
-        match self {
-            Self::Config { message } => message.clone(),
-            Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
-            Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
-            Self::Api { status, .. } if *status >= 500 => format!("server error ({status})"),
-            Self::Api { status: 401, .. } => {
-                "authentication failed, run `maki auth login` or check your API key".into()
-            }
-            Self::Api { status, message } => format!("API error ({status}): {message}"),
-            Self::Tool { tool, message } => format!("{tool}: {message}"),
-            Self::Io(e) => format!("I/O error: {e}"),
-            Self::Http(_) => "connection error, check your network".into(),
-            Self::Timeout { .. } => "stream timed out, retrying".into(),
-            Self::HttpRequest(e) => format!("request error: {e}"),
-            Self::Json(_) => "received an invalid response from the API".into(),
-            Self::Channel => "internal error, try again".into(),
-            Self::Cancelled => "cancelled".into(),
-        }
+        ErrorReport::from_agent_error(self).one_line()
     }
 
     pub async fn from_response(mut response: isahc::Response<isahc::AsyncBody>) -> Self {
@@ -120,15 +108,9 @@ impl AgentError {
         Self::Api { status, message }
     }
 
+    /// The line a retry countdown shows while it waits.
     pub fn retry_message(&self) -> String {
-        match self {
-            Self::Api { status: 429, .. } => "Rate limited".into(),
-            Self::Api { status: 529, .. } => "Provider is overloaded".into(),
-            Self::Api { status, .. } if *status >= 500 => format!("Server error ({status})"),
-            Self::Io(_) | Self::Http(_) => "Connection error".into(),
-            Self::Timeout { .. } => "Stream timed out".into(),
-            _ => self.to_string(),
-        }
+        ErrorReport::from_agent_error(self).primary_line()
     }
 }
 
@@ -185,24 +167,14 @@ mod tests {
         assert_eq!(api(status).is_auth_error(), expected);
     }
 
-    #[test_case(429, "Rate limited"        ; "rate_limited")]
-    #[test_case(529, "Provider is overloaded" ; "overloaded")]
-    #[test_case(500, "Server error (500)"  ; "server_error")]
-    fn retry_message_api(status: u16, expected: &str) {
-        assert_eq!(api(status).retry_message(), expected);
-    }
-
-    #[test_case(429, "rate limited, try again in a moment"                              ; "user_msg_429")]
-    #[test_case(529, "provider is overloaded, try again later"                           ; "user_msg_529")]
-    #[test_case(500, "server error (500)"                                                 ; "user_msg_500")]
-    #[test_case(401, "authentication failed, run `maki auth login` or check your API key" ; "user_msg_401")]
-    #[test_case(400, "API error (400): bad input"                                         ; "user_msg_400")]
-    fn user_message_api(status: u16, expected: &str) {
-        let err = AgentError::Api {
-            status,
-            message: "bad input".into(),
-        };
-        assert_eq!(err.user_message(), expected);
+    #[test_case(429 ; "rate_limited")]
+    #[test_case(401 ; "unauthorized")]
+    #[test_case(500 ; "server_error")]
+    fn messages_come_from_the_report(status: u16) {
+        let err = api_msg(status, "bad input");
+        let report = ErrorReport::from_agent_error(&err);
+        assert_eq!(err.retry_message(), report.primary_line());
+        assert_eq!(err.user_message(), report.one_line());
     }
 
     #[test]

@@ -196,9 +196,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     Ok(p) => Arc::from(p),
                     Err(e) => {
                         error!(error = %e, "provider error");
-                        let _ = event_tx.send(AgentEvent::Error {
-                            message: e.user_message(),
-                        });
+                        let _ = event_tx.send(AgentEvent::error(&e));
                         return;
                     }
                 };
@@ -250,9 +248,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
 
             if let Err(e) = result {
                 error!(error = %e, "agent error");
-                let _ = error_tx.send(AgentEvent::Error {
-                    message: e.user_message(),
-                });
+                let _ = error_tx.send(AgentEvent::error(&e));
             }
 
             if let Some(handle) = mcp_shutdown {
@@ -355,9 +351,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     Ok(p) => Arc::from(p),
                     Err(e) => {
                         error!(error = %e, "provider error");
-                        let _ = EventSender::new(raw_tx, 0).send(AgentEvent::Error {
-                            message: e.user_message(),
-                        });
+                        let _ = EventSender::new(raw_tx, 0).send(AgentEvent::error(&e));
                         return;
                     }
                 };
@@ -388,9 +382,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         }
                         Err(e) => {
                             error!(error = %e, "provider error");
-                            let _ = error_tx.send(AgentEvent::Error {
-                                message: e.user_message(),
-                            });
+                            let _ = error_tx.send(AgentEvent::error(&e));
                             run_id += 1;
                             continue;
                         }
@@ -458,9 +450,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
 
                 if let Err(ref e) = result {
                     error!(error = %e, "agent error");
-                    let _ = error_tx.send(AgentEvent::Error {
-                        message: e.user_message(),
-                    });
+                    let _ = error_tx.send(AgentEvent::error(e));
                 }
 
                 if let Some(store) = &mut store {

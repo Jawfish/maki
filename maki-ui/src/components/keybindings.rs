@@ -181,6 +181,9 @@ pub mod key {
     /// Shares Ctrl+F with `SEARCH`: only the rewind picker looks at it, and
     /// search is not reachable while that picker is open.
     pub const REWIND_FILES: Bind = ctrl_bind!('f');
+    /// Unfolds the underlying text of the last failure, kept out of the
+    /// error block itself so a failure never dumps raw output.
+    pub const ERROR_DETAIL: Bind = ctrl_bind!('l');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -382,6 +385,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::REVIEW.label),
         description: "Review a code change",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::ERROR_DETAIL.label),
+        description: "Show detail of the last error",
         context: KeybindContext::General,
         platform: Platform::All,
     },

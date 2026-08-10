@@ -1,4 +1,5 @@
 pub(crate) mod error;
+pub mod error_report;
 pub mod manifest;
 pub mod model;
 pub mod model_registry;
@@ -8,6 +9,7 @@ pub mod retry;
 pub(crate) mod types;
 
 pub use error::AgentError;
+pub use error_report::{ErrorReport, Transience};
 pub use model::{
     FastPricing, Model, ModelEntry, ModelError, ModelFamily, ModelInfo, ModelPricing, ModelTier,
     TokenUsage, add_cost, format_tokens,

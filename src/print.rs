@@ -299,9 +299,9 @@ pub fn run(
                 stop_reason = *sr;
                 break;
             }
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { report } => {
                 is_error = true;
-                result_text = message.clone();
+                result_text = report.one_line();
                 break;
             }
         }
