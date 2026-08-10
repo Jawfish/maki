@@ -816,7 +816,9 @@ fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
+    let mut ui_config = UiConfig::default();
+    ui_config.tool_output_lines.bash = 5;
+    let mut panel = MessagesPanel::new(ui_config, EventHandle::disconnected_for_test());
     panel.tool_start(ToolStartEvent {
         id: "t1".into(),
         tool: BASH_TOOL_NAME.into(),
@@ -852,6 +854,18 @@ fn toggle_expand_collapse_truncated_tool() {
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
     assert!(seg_text(&panel, "t1").contains("click to expand"));
+}
+
+#[test]
+fn one_line_tool_call_expands_on_click() {
+    let mut panel = panel_with_long_tool(3);
+    panel.tool_output_lines.bash = 1;
+    panel.rebuild_tool_segment("t1");
+    let area = Rect::new(0, 0, 80, 24);
+
+    assert_eq!(panel.segment_heights(), vec![1]);
+    assert!(panel.toggle_expansion_at(area.y, area));
+    assert!(seg_text(&panel, "t1").contains("line 0"));
 }
 
 #[test]

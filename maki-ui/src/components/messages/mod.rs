@@ -10,7 +10,7 @@ use self::segment::{Segment, SegmentCache, wrapped_line_count};
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
     build_instructions_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
-    thinking_style, truncate_to_header, user_style,
+    role_divider_style, thinking_style, truncate_to_header, user_style,
 };
 use super::{
     DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
@@ -466,6 +466,17 @@ impl MessagesPanel {
         true
     }
 
+    /// Newest finalized assistant reply, skipping tool and thinking entries.
+    /// Streaming text lands here once `flush` runs, which `AgentEvent::Done`
+    /// does before the session reports itself idle.
+    pub fn last_assistant_text(&self) -> Option<&str> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, DisplayRole::Assistant) && !m.text.trim().is_empty())
+            .map(|m| m.text.as_str())
+    }
+
     #[cfg(test)]
     pub fn message_count(&self) -> usize {
         self.messages.len()
@@ -602,6 +613,14 @@ impl MessagesPanel {
             let msg_idx = seg.msg_index;
             return self.try_toggle_cached_thinking(msg_idx, width);
         };
+
+        if seg.truncation.any() {
+            let tool_id = tool_id.to_owned();
+            let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
+            entry.output = !entry.output;
+            self.rebuild_expanded_tool(&tool_id);
+            return true;
+        }
 
         if self.has_snapshot(tool_id) {
             let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
@@ -773,10 +792,11 @@ impl MessagesPanel {
             streaming_heights.push(wrapped_line_count(lines, width));
         }
 
+        let streaming_text_divider = !self.streaming_text.is_empty() && cached_count > 0;
         if !self.streaming_text.is_empty() {
             let lines = self.streaming_text.render_lines(width);
             if cached_count > 0 || !streaming_heights.is_empty() {
-                streaming_heights.push(1);
+                streaming_heights.push(if streaming_text_divider { 2 } else { 1 });
             }
             streaming_heights.push(wrapped_line_count(lines, width));
         }
@@ -805,23 +825,31 @@ impl MessagesPanel {
             }
             let h = seg.height(width);
             let highlight = self.highlight_segment == Some(i);
-            let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
-            cursor.render(seg.lines(), h, style, highlight, frame);
+            cursor.render(seg.lines(), h, None, highlight, frame);
         }
 
-        let mut height_idx = 0usize;
-        let streamed: [(&StreamingContent, bool); 2] = [
-            (&self.streaming_thinking, thinking_collapsed),
-            (&self.streaming_text, false),
+        let divider_spacer: [Line<'static>; 2] = [
+            Line::default(),
+            hr_line(width, role_divider_style(assistant_style().prefix_style)),
         ];
-        for (sc, collapsed) in streamed {
+        let mut height_idx = 0usize;
+        let streamed: [(&StreamingContent, bool, bool); 2] = [
+            (&self.streaming_thinking, thinking_collapsed, false),
+            (&self.streaming_text, false, streaming_text_divider),
+        ];
+        for (sc, collapsed, divider) in streamed {
             if sc.is_empty() || height_idx >= streaming_heights.len() || cursor.past_bottom() {
                 continue;
             }
             if cached_count > 0 || height_idx > 0 {
                 let h = streaming_heights[height_idx];
                 height_idx += 1;
-                cursor.render(&spacer_lines, h, None, false, frame);
+                let sep: &[Line<'static>] = if divider {
+                    &divider_spacer
+                } else {
+                    &spacer_lines
+                };
+                cursor.render(sep, h, None, false, frame);
             }
             if height_idx < streaming_heights.len() {
                 let h = streaming_heights[height_idx];
@@ -1324,6 +1352,13 @@ impl MessagesPanel {
                         ),
                         theme::current().tool_dim,
                     )));
+                }
+
+                if i > 0 && matches!(msg.role, DisplayRole::User | DisplayRole::Assistant) {
+                    lines.insert(
+                        0,
+                        hr_line(self.viewport_width, role_divider_style(style.prefix_style)),
+                    );
                 }
 
                 let search_text = format!("{prefix}{}", msg.text);

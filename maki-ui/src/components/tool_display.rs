@@ -47,11 +47,23 @@ pub struct RoleStyle {
     pub max_line_bytes: Option<usize>,
 }
 
+fn marker_style(style: Style) -> Style {
+    Style::new().fg(style.fg.unwrap_or(theme::current().foreground))
+}
+
+/// Role separator drawn above user and assistant messages.
+pub fn role_divider_style(style: Style) -> Style {
+    theme::dim_style(
+        Style::new().fg(style.fg.unwrap_or(theme::current().foreground)),
+        0.65,
+    )
+}
+
 pub fn assistant_style() -> RoleStyle {
     RoleStyle {
-        prefix: "maki> ",
+        prefix: "maki>",
         text_style: theme::current().assistant,
-        prefix_style: theme::current().assistant_prefix,
+        prefix_style: marker_style(theme::current().assistant_prefix),
         use_markdown: true,
         max_line_bytes: None,
     }
@@ -59,9 +71,9 @@ pub fn assistant_style() -> RoleStyle {
 
 pub fn user_style() -> RoleStyle {
     RoleStyle {
-        prefix: "you> ",
+        prefix: "you>",
         text_style: theme::current().assistant,
-        prefix_style: theme::current().user,
+        prefix_style: marker_style(theme::current().user),
         use_markdown: true,
         max_line_bytes: None,
     }
@@ -606,7 +618,8 @@ pub fn build_tool_lines(
         None => (msg.text.as_str(), None),
     };
 
-    let mut b = ToolLineBuilder::new(rctx.width, expanded, rctx.tool_output_lines.get(tool_name));
+    let output_limit = rctx.tool_output_lines.get(tool_name);
+    let mut b = ToolLineBuilder::new(rctx.width, expanded, output_limit);
     b.apply_output_format(msg.tool_output.as_deref());
     b.push_header(
         tool_name,
@@ -616,6 +629,20 @@ pub fn build_tool_lines(
     );
     b.prepend_indicator(status.into(), rctx.started_at);
     let has_snapshot = msg.render_snapshot.is_some();
+    if output_limit == 1
+        && !expanded.any()
+        && (msg.render_snapshot.is_some()
+            || msg.tool_input.is_some()
+            || msg.tool_output.is_some()
+            || body.is_some())
+    {
+        b.truncation.output = true;
+        return b.finish(
+            msg.tool_input.clone(),
+            msg.tool_output.clone(),
+            TOOL_BODY_INDENT,
+        );
+    }
     b.push_code_content(
         msg.tool_input.as_deref(),
         if has_snapshot {
@@ -745,6 +772,15 @@ mod tests {
             width,
             tool_output_lines: &TOL,
         }
+    }
+
+    #[test]
+    fn user_and_assistant_markers_use_undimmed_role_color() {
+        let theme = theme::current();
+        assert_eq!(assistant_style().prefix_style.fg, theme.assistant_prefix.fg);
+        assert_eq!(assistant_style().prefix_style.bg, None);
+        assert_eq!(user_style().prefix_style.fg, theme.user.fg);
+        assert_eq!(user_style().prefix_style.bg, None);
     }
 
     fn exp(both: bool) -> SectionFlags {

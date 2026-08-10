@@ -151,7 +151,11 @@ fn prefix_line(prefix: &str, style: Style) -> Line<'static> {
     if prefix.is_empty() {
         Line::default()
     } else {
-        Line::from(prefix_span(prefix, style))
+        let mut spans = vec![prefix_span(prefix, style)];
+        if !prefix.ends_with(char::is_whitespace) {
+            spans.push(Span::raw(" "));
+        }
+        Line::from(spans)
     }
 }
 
@@ -179,6 +183,9 @@ pub fn plain_lines(
         if first_line {
             if !prefix.is_empty() {
                 spans.push(prefix_span(prefix, prefix_style));
+                if !prefix.ends_with(char::is_whitespace) {
+                    spans.push(Span::raw(" "));
+                }
             }
             first_line = false;
         }
@@ -214,6 +221,9 @@ pub(crate) fn paint_semantic(
 
     if shares_line_with_prefix(&semantic[0].kind) {
         if !prefix.is_empty() {
+            if !prefix.ends_with(char::is_whitespace) {
+                lines[0].spans.insert(0, Span::raw(" "));
+            }
             lines[0].spans.insert(0, prefix_span(prefix, prefix_style));
         }
     } else if !prefix.is_empty() {
