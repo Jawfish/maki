@@ -7,14 +7,15 @@ use super::subscription_usage::SubscriptionUsage;
 use super::{RetryInfo, Status};
 
 use crate::animation::spinner_frame;
+use crate::components::layout::{COST_COL, TOKENS_COL, right_align};
 use crate::theme;
 
+use crate::components::marker::State;
 use maki_providers::{ModelPricing, ProviderUsage, TokenUsage, UsageLimit, format_tokens};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use crate::components::marker::State;
 use ratatui::widgets::Paragraph;
 
 const FAST_LABEL: &str = " [fast]";
@@ -22,6 +23,8 @@ const CLAUDE_ICON: &str = "\u{ec82}";
 const OPENAI_ICON: &str = "\u{ec81}";
 const RESET_ICON: &str = "\u{eb37}";
 const WARNING_PERCENTAGE: u32 = 85;
+const PERCENT_COL: usize = 3;
+const GLOBAL_COST_PREFIX: &str = "\u{03a3}";
 
 pub struct UsageStats<'a> {
     pub global_usage: &'a TokenUsage,
@@ -190,28 +193,23 @@ impl StatusBar {
                     right_spans.push(Span::styled(FAST_LABEL, theme::current().status_dim));
                 }
 
-                let context_text = format!(
-                    "  {}/{} ({}%)",
-                    format_tokens(ctx.stats.context_size),
-                    format_tokens(ctx.stats.context_window),
-                    pct,
-                );
-                let rest_text = match ctx.stats.cost {
-                    Some(cost) => format!("{context_text} ${cost:.3} "),
-                    None => format!("{context_text} "),
-                };
                 right_spans.push(Span::styled(
-                    rest_text,
+                    context_text(ctx.stats.context_size, ctx.stats.context_window, pct),
                     Style::new().fg(theme::current().foreground),
                 ));
+                if let Some(cost) = ctx.stats.cost {
+                    right_spans.push(Span::styled(
+                        cost_text("", cost),
+                        Style::new().fg(theme::current().foreground),
+                    ));
+                }
 
                 if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
-                    let global_text = format!(
-                        " \u{03a3}${:.3} ",
-                        ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
-                    );
                     right_spans.push(Span::styled(
-                        global_text,
+                        cost_text(
+                            GLOBAL_COST_PREFIX,
+                            ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
+                        ),
                         Style::new().fg(theme::current().foreground),
                     ));
                 }
@@ -251,6 +249,24 @@ impl StatusBar {
 
 fn compact_model_name(model: &str) -> &str {
     model.rsplit_once('/').map_or(model, |(_, name)| name)
+}
+
+/// Context usage with the live number right-aligned so it stays in one
+/// column while it grows.
+fn context_text(size: u32, window: u32, percentage: u32) -> String {
+    format!(
+        "  {}/{} ({}%)",
+        right_align(&format_tokens(size), TOKENS_COL),
+        format_tokens(window),
+        right_align(&percentage.to_string(), PERCENT_COL),
+    )
+}
+
+fn cost_text(prefix: &str, cost: f64) -> String {
+    format!(
+        " {prefix}{} ",
+        right_align(&format!("${cost:.3}"), COST_COL)
+    )
 }
 
 fn now_millis() -> u64 {
@@ -512,5 +528,26 @@ mod tests {
         bar.flash("Copied".into());
         bar.clear_flash();
         assert!(bar.flash.is_none());
+    }
+
+    const CONTEXT_PREFIX: &str = "  ";
+    const PERCENT_SUFFIX: &str = "%)";
+
+    #[test_case(0, 0 ; "empty_context")]
+    #[test_case(1_024, 12 ; "small_context")]
+    #[test_case(950_000, 99 ; "nearly_full_context")]
+    fn context_text_keeps_numbers_in_one_column(size: u32, percentage: u32) {
+        let text = context_text(size, 1_000_000, percentage);
+        let (used, _) = text.split_once('/').unwrap();
+        assert_eq!(used.len(), CONTEXT_PREFIX.len() + TOKENS_COL);
+        let percent = text.rsplit_once('(').unwrap().1;
+        assert_eq!(percent.len(), PERCENT_COL + PERCENT_SUFFIX.len());
+    }
+
+    #[test_case(0.0 ; "zero_cost")]
+    #[test_case(1234.5 ; "large_cost")]
+    fn cost_text_keeps_costs_in_one_column(cost: f64) {
+        let text = cost_text("", cost);
+        assert_eq!(text.len(), COST_COL.max(text.trim().len()) + 2);
     }
 }

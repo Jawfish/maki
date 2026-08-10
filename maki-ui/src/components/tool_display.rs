@@ -33,7 +33,7 @@ pub struct RenderCtx<'a> {
     pub tool_output_lines: &'a ToolOutputLines,
 }
 
-pub const TOOL_BODY_INDENT: &str = "  ";
+pub const TOOL_BODY_INDENT: &str = crate::components::layout::MESSAGE_INDENT;
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
@@ -49,14 +49,6 @@ pub struct RoleStyle {
 
 fn marker_style(style: Style) -> Style {
     Style::new().fg(style.fg.unwrap_or(theme::current().foreground))
-}
-
-/// Role separator drawn above user and assistant messages.
-pub fn role_divider_style(style: Style) -> Style {
-    theme::dim_style(
-        Style::new().fg(style.fg.unwrap_or(theme::current().foreground)),
-        0.65,
-    )
 }
 
 pub fn assistant_style() -> RoleStyle {

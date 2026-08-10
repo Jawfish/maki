@@ -1,4 +1,6 @@
+use crate::components::layout::{WrappedLines, blank_rows};
 use crate::render_worker::RenderWorker;
+use crate::selection::Join;
 
 use super::super::code_view::SectionFlags;
 use super::super::tool_display::{HighlightRequest, ToolLines};
@@ -57,6 +59,9 @@ pub(super) struct Segment {
     pub spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
     pub content_indent: &'static str,
+    /// Set only for pre-wrapped message lines: how each row joins the one
+    /// above it, so a copy rebuilds logical lines.
+    joins: Vec<Join>,
 }
 
 impl Segment {
@@ -67,9 +72,9 @@ impl Segment {
         }
     }
 
-    pub fn spacer() -> Self {
+    pub fn spacing(rows: usize) -> Self {
         Self {
-            lines: vec![Line::default()],
+            lines: blank_rows(rows),
             ..Self::default()
         }
     }
@@ -84,6 +89,29 @@ impl Segment {
             search_text,
             msg_index,
             ..Self::default()
+        }
+    }
+
+    pub fn with_wrapped(
+        wrapped: WrappedLines,
+        search_text: String,
+        msg_index: Option<usize>,
+    ) -> Self {
+        Self {
+            lines: wrapped.lines,
+            joins: wrapped.joins,
+            search_text,
+            msg_index,
+            ..Self::default()
+        }
+    }
+
+    /// Empty unless the lines are pre-wrapped and still in step with them.
+    pub fn joins(&self) -> &[Join] {
+        if self.joins.len() == self.lines.len() {
+            &self.joins
+        } else {
+            &[]
         }
     }
 
@@ -323,9 +351,10 @@ impl SegmentCache {
         self.segments.len()
     }
 
-    pub fn push_spacer_if_needed(&mut self) {
-        if !self.segments.is_empty() {
-            self.segments.push(Segment::spacer());
+    /// Vertical rhythm between blocks; no leading gap at the top of history.
+    pub fn push_spacing(&mut self, rows: usize) {
+        if !self.segments.is_empty() && rows > 0 {
+            self.segments.push(Segment::spacing(rows));
         }
     }
 

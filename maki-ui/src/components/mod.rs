@@ -6,6 +6,7 @@ pub(crate) mod form;
 pub(crate) mod help_modal;
 pub mod input;
 pub mod keybindings;
+pub(crate) mod layout;
 pub(crate) mod list_picker;
 pub(crate) mod login_picker;
 pub(crate) mod lua_float;

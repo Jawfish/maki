@@ -682,9 +682,6 @@ fn stream_reset_clears_streaming_and_fails_tools() {
 
 const MAKI_PREFIX_LEN: u16 = 6;
 
-/// Role divider drawn above every message after the first one.
-const DIVIDER_ROWS: u16 = 1;
-
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(
         area.y + anchor.0 as u16,
@@ -755,7 +752,7 @@ fn extract_mixed_fully_enclosed_and_partial() {
     let panel = panel_with_msgs(&["full segment", "partial here"], 80, 24);
     let heights = panel.segment_heights().to_vec();
     let area = Rect::new(0, 0, 80, 24);
-    let seg1_text_row = heights[0] + heights[1] + DIVIDER_ROWS;
+    let seg1_text_row = heights[0] + heights[1];
     let sel = make_sel(area, (0, 0), (seg1_text_row as u32, MAKI_PREFIX_LEN + 6));
     let text = panel.extract_selection_text(&sel, area);
     assert!(text.contains("full segment"));
@@ -1031,6 +1028,30 @@ fn instruction_segment_has_spacer_before_it() {
 
     let inst_id = segment::instruction_id("t1");
     assert!(prev_segment_is_spacer(&panel, &inst_id));
+}
+
+const RULE_GLYPH: char = '─';
+
+#[test]
+fn role_change_uses_section_spacing_instead_of_a_rule() {
+    let mut panel = MessagesPanel::new(test_ui_config(), EventHandle::disconnected_for_test());
+    panel.push(DisplayMessage::new(DisplayRole::User, "hi".into()));
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, "there".into()));
+    rebuild(&mut panel);
+
+    let gap = panel.cache.get(1).unwrap();
+    assert_eq!(
+        gap.lines().len(),
+        SPACING_SECTION,
+        "gap uses the spacing scale"
+    );
+    let has_rule = panel
+        .cache
+        .segments()
+        .iter()
+        .flat_map(|s| s.lines())
+        .any(|l| l.spans.iter().any(|s| s.content.contains(RULE_GLYPH)));
+    assert!(!has_rule, "whitespace replaces the role divider rule");
 }
 
 fn seg_line_count(panel: &MessagesPanel, tool_id: &str) -> usize {

@@ -14,6 +14,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::ModalScroll;
 use crate::components::keybindings::key;
+use crate::components::layout::{COST_COL, TOKENS_COL, right_align};
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::theme;
@@ -21,8 +22,16 @@ use crate::theme;
 const TITLE: &str = " Token usage ";
 const PREFIX: &str = "  ";
 const MODEL_COL_MIN: usize = 16;
-const NUM_COL: usize = 7;
 const COL_GAP: usize = 2;
+const IN_LABEL: &str = "in";
+const OUT_LABEL: &str = "out";
+const CACHE_LABEL: &str = "cache";
+const CACHE_READ_LABEL: &str = "cache read";
+const CACHE_WRITE_LABEL: &str = "cache write";
+const TOTAL_LABEL: &str = "total";
+const COST_LABEL: &str = "cost";
+const MODEL_LABEL: &str = "model";
+const NO_COST: &str = "—";
 const NO_USAGE_ENDPOINT: &str = "no usage endpoint for this provider";
 const HOUR: i64 = 3600;
 const DAY: i64 = 24 * HOUR;
@@ -206,45 +215,53 @@ fn totals_row(
     cost: Option<f64>,
     theme: &crate::theme::Theme,
 ) -> Vec<Span<'static>> {
-    let mut spans = vec![
-        Span::raw(PREFIX),
-        Span::styled(
-            format!(
-                "in {:<7} out {:<7} cache read {:<7} cache write {:<7} total {:<7}",
-                format_tokens(total.input),
-                format_tokens(total.output),
-                format_tokens(total.cache_read),
-                format_tokens(total.cache_creation),
-                format_tokens(total.context_tokens()),
-            ),
-            Style::new().fg(theme.foreground),
-        ),
-    ];
+    let fg = Style::new().fg(theme.foreground);
+    let mut spans = vec![Span::raw(PREFIX)];
+    for (label, value) in [
+        (IN_LABEL, total.input),
+        (OUT_LABEL, total.output),
+        (CACHE_READ_LABEL, total.cache_read),
+        (CACHE_WRITE_LABEL, total.cache_creation),
+        (TOTAL_LABEL, total.context_tokens()),
+    ] {
+        spans.push(Span::styled(format!("{label} "), theme.status_dim));
+        spans.push(Span::styled(
+            right_align(&format_tokens(value), TOKENS_COL),
+            fg,
+        ));
+        spans.push(gap());
+    }
     if let Some(c) = cost {
-        spans.push(Span::styled(format!("  ${c:.3}"), theme.accent));
+        spans.push(Span::styled(
+            right_align(&format!("${c:.3}"), COST_COL),
+            theme.accent,
+        ));
     }
     spans
 }
 
+fn gap() -> Span<'static> {
+    Span::raw(" ".repeat(COL_GAP))
+}
+
 fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
-    let h = |label: &str| Span::styled(format!("{label:>NUM_COL$}"), theme.status_dim);
-    let gap = || Span::raw(" ".repeat(COL_GAP));
+    let h = |label: &str| Span::styled(right_align(label, TOKENS_COL), theme.status_dim);
     vec![
         Span::raw(PREFIX),
         Span::styled(
-            format!("{:width$}", "model", width = model_w),
+            format!("{MODEL_LABEL:width$}", width = model_w),
             theme.status_dim,
         ),
         gap(),
-        h("in"),
+        h(IN_LABEL),
         gap(),
-        h("out"),
+        h(OUT_LABEL),
         gap(),
-        h("cache"),
+        h(CACHE_LABEL),
         gap(),
-        h("total"),
+        h(TOTAL_LABEL),
         gap(),
-        Span::styled(format!("{:>6}", "cost"), theme.status_dim),
+        Span::styled(right_align(COST_LABEL, COST_COL), theme.status_dim),
     ]
 }
 
@@ -256,8 +273,7 @@ fn model_row(
     fg: Style,
     dim: Style,
 ) -> Vec<Span<'static>> {
-    let num = |v: u32| Span::styled(format!("{:>NUM_COL$}", format_tokens(v)), fg);
-    let gap = || Span::raw(" ".repeat(COL_GAP));
+    let num = |v: u32| Span::styled(right_align(&format_tokens(v), TOKENS_COL), fg);
     vec![
         Span::raw(PREFIX),
         Span::styled(format!("{id:<model_w$}"), fg),
@@ -271,8 +287,8 @@ fn model_row(
         num(usage.total()),
         gap(),
         match cost {
-            Some(c) => Span::styled(format!("{c:>6.3}"), fg),
-            None => Span::styled(format!("{:>6}", "—"), dim),
+            Some(c) => Span::styled(right_align(&format!("${c:.3}"), COST_COL), fg),
+            None => Span::styled(right_align(NO_COST, COST_COL), dim),
         },
     ]
 }
@@ -378,6 +394,60 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    fn row_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test_case(0, None ; "empty_usage_without_cost")]
+    #[test_case(1_234_567, Some(12.5) ; "large_usage_with_cost")]
+    fn model_rows_align_numbers_under_header_columns(tokens: u32, cost: Option<f64>) {
+        let theme = crate::theme::current();
+        let fg = Style::new().fg(theme.foreground);
+        let usage = StoredTokenUsage {
+            input: tokens,
+            output: tokens,
+            cache_creation: tokens,
+            cache_read: tokens,
+        };
+        let header = row_text(&header_row(MODEL_COL_MIN, &theme));
+        let row = row_text(&model_row(
+            "m",
+            &usage,
+            cost,
+            MODEL_COL_MIN,
+            fg,
+            theme.status_dim,
+        ));
+        assert_eq!(
+            header.chars().count(),
+            row.chars().count(),
+            "header and model row must share column widths"
+        );
+        assert!(header.ends_with(COST_LABEL), "cost column is right-aligned");
+    }
+
+    #[test]
+    fn totals_row_right_aligns_every_number() {
+        let theme = crate::theme::current();
+        let total = TokenUsage {
+            input: 5,
+            ..TokenUsage::default()
+        };
+        let spans = totals_row(&total, Some(0.5), &theme);
+        let numbers: Vec<&str> = spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .filter(|c| c.starts_with(' ') && !c.trim().is_empty())
+            .collect();
+        assert!(!numbers.is_empty());
+        for number in numbers {
+            assert!(
+                number.len() == TOKENS_COL || number.len() == COST_COL,
+                "{number:?} must fill a stable column"
+            );
+        }
     }
 
     #[test_case(key(KeyCode::Esc, KeyModifiers::NONE) ; "esc_closes")]

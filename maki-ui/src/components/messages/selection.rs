@@ -1,4 +1,5 @@
 use super::segment::SegmentCache;
+use crate::components::layout::MESSAGE_INDENT;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 
 use ratatui::buffer::Buffer;
@@ -65,7 +66,10 @@ pub(super) fn extract_selection_text(
             end_col,
         };
 
-        let breaks = LineBreaks::from_lines(seg.lines(), width);
+        let breaks = match seg.joins() {
+            [] => LineBreaks::from_lines(seg.lines(), width),
+            joins => LineBreaks::from_joins(joins, MESSAGE_INDENT.len()),
+        };
         selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out, &breaks);
     }
     out

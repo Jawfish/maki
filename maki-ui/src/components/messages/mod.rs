@@ -10,13 +10,16 @@ use self::segment::{Segment, SegmentCache, wrapped_line_count};
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
     build_instructions_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
-    role_divider_style, thinking_style, truncate_to_header, user_style,
+    thinking_style, truncate_to_header, user_style,
 };
 use super::{
     DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
 };
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
+use crate::components::layout::{
+    SPACING_BLOCK, SPACING_SECTION, blank_rows, separator_rows, wrap_with_hanging_indent,
+};
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
@@ -355,7 +358,8 @@ impl MessagesPanel {
             let mut seg = Segment::with_tool(inst_id);
             seg.search_text = tl.search_text.clone();
             seg.apply_highlight(tl, &self.hl_worker);
-            self.cache.insert(parent_idx + 1, Segment::spacer());
+            self.cache
+                .insert(parent_idx + 1, Segment::spacing(SPACING_BLOCK));
             self.cache.insert(parent_idx + 2, seg);
         }
     }
@@ -782,7 +786,6 @@ impl MessagesPanel {
         }
 
         let cached_count = self.cache.len();
-        let spacer_lines: [Line<'static>; 1] = [Line::default()];
         let mut streaming_heights: Vec<u16> = Vec::new();
 
         let thinking_collapsed = self.streaming_thinking_collapsed();
@@ -792,25 +795,27 @@ impl MessagesPanel {
             Vec::new()
         };
 
-        if thinking_collapsed {
-            if cached_count > 0 || !streaming_heights.is_empty() {
-                streaming_heights.push(1);
+        fn push_separator(heights: &mut Vec<u16>, first: bool, section: bool) {
+            let rows = separator_rows(first, section) as u16;
+            if rows > 0 {
+                heights.push(rows);
             }
+        }
+
+        if thinking_collapsed {
+            push_separator(&mut streaming_heights, cached_count == 0, false);
             streaming_heights.push(collapsed_thinking_lines.len() as u16);
         } else if !self.streaming_thinking.is_empty() {
             let lines = self.streaming_thinking.render_lines(width);
-            if cached_count > 0 || !streaming_heights.is_empty() {
-                streaming_heights.push(1);
-            }
+            push_separator(&mut streaming_heights, cached_count == 0, false);
             streaming_heights.push(wrapped_line_count(lines, width));
         }
 
         let streaming_text_divider = !self.streaming_text.is_empty() && cached_count > 0;
         if !self.streaming_text.is_empty() {
             let lines = self.streaming_text.render_lines(width);
-            if cached_count > 0 || !streaming_heights.is_empty() {
-                streaming_heights.push(if streaming_text_divider { 2 } else { 1 });
-            }
+            let first_block = cached_count == 0 && streaming_heights.is_empty();
+            push_separator(&mut streaming_heights, first_block, streaming_text_divider);
             streaming_heights.push(wrapped_line_count(lines, width));
         }
 
@@ -841,28 +846,19 @@ impl MessagesPanel {
             cursor.render(seg.lines(), h, None, highlight, frame);
         }
 
-        let divider_spacer: [Line<'static>; 2] = [
-            Line::default(),
-            hr_line(width, role_divider_style(assistant_style().prefix_style)),
-        ];
         let mut height_idx = 0usize;
-        let streamed: [(&StreamingContent, bool, bool); 2] = [
-            (&self.streaming_thinking, thinking_collapsed, false),
-            (&self.streaming_text, false, streaming_text_divider),
+        let streamed: [(&StreamingContent, bool); 2] = [
+            (&self.streaming_thinking, thinking_collapsed),
+            (&self.streaming_text, false),
         ];
-        for (sc, collapsed, divider) in streamed {
+        for (sc, collapsed) in streamed {
             if sc.is_empty() || height_idx >= streaming_heights.len() || cursor.past_bottom() {
                 continue;
             }
             if cached_count > 0 || height_idx > 0 {
                 let h = streaming_heights[height_idx];
                 height_idx += 1;
-                let sep: &[Line<'static>] = if divider {
-                    &divider_spacer
-                } else {
-                    &spacer_lines
-                };
-                cursor.render(sep, h, None, false, frame);
+                cursor.render(&blank_rows(usize::from(h)), h, None, false, frame);
             }
             if height_idx < streaming_heights.len() {
                 let h = streaming_heights[height_idx];
@@ -1294,7 +1290,7 @@ impl MessagesPanel {
                 let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
                 let id = t.id.clone();
                 let search_text = tl.search_text.clone();
-                self.cache.push_spacer_if_needed();
+                self.cache.push_spacing(SPACING_BLOCK);
                 let mut seg = Segment::with_tool(id.clone());
                 seg.search_text = search_text;
                 seg.apply_highlight(tl, &self.hl_worker);
@@ -1313,7 +1309,7 @@ impl MessagesPanel {
                     let text = msg.text.clone();
                     let lines = self.build_cached_thinking_indicator(&text);
                     let search_text = format!("thinking> {text}");
-                    self.cache.push_spacer_if_needed();
+                    self.cache.push_spacing(SPACING_BLOCK);
                     self.cache
                         .push(Segment::with_lines(lines, search_text, Some(i)));
                     continue;
@@ -1367,17 +1363,18 @@ impl MessagesPanel {
                     )));
                 }
 
-                if i > 0 && matches!(msg.role, DisplayRole::User | DisplayRole::Assistant) {
-                    lines.insert(
-                        0,
-                        hr_line(self.viewport_width, role_divider_style(style.prefix_style)),
-                    );
-                }
-
+                let rows = if matches!(msg.role, DisplayRole::User | DisplayRole::Assistant) {
+                    SPACING_SECTION
+                } else {
+                    SPACING_BLOCK
+                };
                 let search_text = format!("{prefix}{}", msg.text);
-                self.cache.push_spacer_if_needed();
-                self.cache
-                    .push(Segment::with_lines(lines, search_text, Some(i)));
+                self.cache.push_spacing(rows);
+                self.cache.push(Segment::with_wrapped(
+                    wrap_with_hanging_indent(lines, self.viewport_width),
+                    search_text,
+                    Some(i),
+                ));
             }
         }
         self.cache.mark_built(self.messages.len());

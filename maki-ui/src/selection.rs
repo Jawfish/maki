@@ -294,6 +294,15 @@ impl SelectionState {
     }
 }
 
+/// How a pre-wrapped row joins the row above it when copied back into
+/// logical lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Join {
+    NewLine,
+    Word,
+    Char,
+}
+
 #[derive(Clone, Debug, Default)]
 pub enum LineBreaks {
     #[default]
@@ -301,6 +310,8 @@ pub enum LineBreaks {
     Bitmap {
         line_starts: Vec<u64>,
         word_wraps: Vec<u64>,
+        /// Leading columns of hanging indent to drop from continuation rows.
+        indent: usize,
     },
 }
 
@@ -331,6 +342,7 @@ impl LineBreaks {
         Self::Bitmap {
             line_starts,
             word_wraps: Vec::new(),
+            indent: 0,
         }
     }
 
@@ -359,6 +371,34 @@ impl LineBreaks {
         Self::Bitmap {
             line_starts,
             word_wraps,
+            indent: 0,
+        }
+    }
+
+    /// For lines pre-wrapped with a hanging indent: one row per line, so the
+    /// joins map straight onto rows.
+    pub fn from_joins(joins: &[Join], indent: usize) -> Self {
+        let mut line_starts = Vec::new();
+        let mut word_wraps = Vec::new();
+        for (row, join) in joins.iter().enumerate() {
+            let row = row as u16;
+            match join {
+                Join::NewLine => set_bit(&mut line_starts, row),
+                Join::Word => set_bit(&mut word_wraps, row),
+                Join::Char => {}
+            }
+        }
+        Self::Bitmap {
+            line_starts,
+            word_wraps,
+            indent,
+        }
+    }
+
+    pub fn continuation_indent(&self, row: u16) -> usize {
+        match self {
+            Self::Bitmap { indent, .. } if !self.is_line_start(row) => *indent,
+            _ => 0,
         }
     }
 
@@ -524,6 +564,20 @@ pub(crate) fn strip_code_bar_prefix(
     prefix_len
 }
 
+/// Continuation rows carry the hanging indent for display only; a copy must
+/// rebuild the logical line without it.
+fn strip_hanging_indent(out: &mut String, line_start: usize, indent: usize) {
+    if indent == 0 {
+        return;
+    }
+    let leading = out[line_start..]
+        .chars()
+        .take_while(|c| *c == ' ')
+        .count()
+        .min(indent);
+    out.drain(line_start..line_start + leading);
+}
+
 /// Trailing whitespace is trimmed per line. Consecutive blank lines are
 /// collapsed so we don't emit a wall of empty newlines.
 pub(crate) fn append_rows(
@@ -571,6 +625,10 @@ pub(crate) fn append_rows(
         } else {
             0
         };
+
+        if col_start == area.x {
+            strip_hanging_indent(out, line_start, breaks.continuation_indent(rel_row));
+        }
 
         let trimmed_len = out[line_start..].trim_end().len() + line_start;
         out.truncate(trimmed_len);
