@@ -24,6 +24,31 @@ const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
+pub(crate) fn normalize_tool_name(name: &str) -> &str {
+    const CLAUDE_TOOL_NAMES: &[(&str, &str)] = &[
+        ("Bash", "bash"),
+        ("Read", "read"),
+        ("Edit", "edit"),
+        ("Write", "write"),
+        ("Grep", "grep"),
+        ("Glob", "glob"),
+        ("TodoWrite", "todo_write"),
+        ("WebFetch", "webfetch"),
+        ("WebSearch", "websearch"),
+        ("Task", "task"),
+        ("MultiEdit", "multiedit"),
+        ("CodeExecution", "code_execution"),
+        ("Index", "index"),
+        ("Memory", "memory"),
+        ("Question", "question"),
+        ("Skill", "skill"),
+    ];
+    CLAUDE_TOOL_NAMES
+        .iter()
+        .find(|(claude, _)| *claude == name)
+        .map(|(_, maki)| *maki)
+        .unwrap_or(name)
+}
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
@@ -71,8 +96,8 @@ pub async fn run(
     ctx: &ToolContext,
     emit: Emit,
 ) -> ToolDoneEvent {
-    // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
-    let name = name.strip_prefix("functions.").unwrap_or(name);
+    let name = normalize_tool_name(name.strip_prefix("functions.").unwrap_or(name));
+
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
     }
@@ -537,6 +562,14 @@ mod tests {
         rc
     }
 
+    #[test_case("Bash", "bash")]
+    #[test_case("Read", "read")]
+    #[test_case("TodoWrite", "todo_write")]
+    #[test_case("CodeExecution", "code_execution")]
+    #[test_case("custom_tool", "custom_tool")]
+    fn normalizes_claude_tool_names(name: &str, expected: &str) {
+        assert_eq!(normalize_tool_name(name), expected);
+    }
     #[test_case("read", &[("read", "/a"), ("read", "/a")], true  ; "triggers_at_threshold")]
     #[test_case("read", &[("read", "/a")],                 false ; "below_threshold")]
     #[test_case("read", &[("read", "/a"), ("read", "/b")], false ; "different_input_breaks_chain")]

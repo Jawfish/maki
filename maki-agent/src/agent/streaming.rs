@@ -5,7 +5,9 @@ use maki_storage::id::SessionRef;
 use serde_json::Value;
 use tracing::warn;
 
+use super::tool_dispatch::normalize_tool_name;
 use crate::cancel::CancelToken;
+
 use crate::{AgentError, AgentEvent, EventSender};
 
 async fn forward_provider_events(prx: flume::Receiver<ProviderEvent>, event_tx: &EventSender) {
@@ -13,7 +15,10 @@ async fn forward_provider_events(prx: flume::Receiver<ProviderEvent>, event_tx: 
         let ae = match pe {
             ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
             ProviderEvent::ThinkingDelta { text } => AgentEvent::ThinkingDelta { text },
-            ProviderEvent::ToolUseStart { id, name } => AgentEvent::ToolPending { id, name },
+            ProviderEvent::ToolUseStart { id, name } => AgentEvent::ToolPending {
+                id,
+                name: normalize_tool_name(&name).into(),
+            },
             ProviderEvent::PromptProgress {
                 processed,
                 total,
