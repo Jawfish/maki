@@ -90,6 +90,23 @@ fn well_known_url(base_url: &str, well_known: &str) -> String {
     }
 }
 
+/// RFC 9728 allows metadata at a path-inserted well-known URL or at the origin
+/// root. Servers whose MCP endpoint has a path (e.g. `/mcp`) often publish only
+/// the root document, so try the path-inserted URL first and then the root.
+fn well_known_candidates(base_url: &str, well_known: &str) -> Vec<String> {
+    let parts = parse_url(base_url);
+    let root = format!(
+        "{}{}/.well-known/{well_known}",
+        parts.scheme, parts.authority
+    );
+    let with_path = well_known_url(base_url, well_known);
+    if with_path == root {
+        vec![root]
+    } else {
+        vec![with_path, root]
+    }
+}
+
 pub(super) fn server_origin(server_url: &str) -> String {
     origin(server_url)
 }
@@ -129,33 +146,26 @@ pub async fn discover_resource_metadata(
         return Ok(meta);
     }
 
-    let url = well_known_url(server_url, "oauth-protected-resource");
-    fetch_json::<ResourceMetadata>(client, &url)
-        .await
-        .map_err(|e| OAuthError::Other(format!("resource metadata discovery failed: {e}")))
+    let mut last_err = OAuthError::Other("no candidates".into());
+    for url in well_known_candidates(server_url, "oauth-protected-resource") {
+        match fetch_json::<ResourceMetadata>(client, &url).await {
+            Ok(meta) => return Ok(meta),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(OAuthError::Other(format!(
+        "resource metadata discovery failed: {last_err}"
+    )))
 }
 
 pub async fn discover_auth_server(
     client: &HttpClient,
     issuer_url: &str,
 ) -> Result<AuthServerMetadata, OAuthError> {
-    let parts = parse_url(issuer_url);
-    let has_path = !parts.path.is_empty() && parts.path != "/";
-
-    let well_known_names = ["oauth-authorization-server", "openid-configuration"];
-    let mut candidates: Vec<String> = well_known_names
+    let candidates: Vec<String> = ["oauth-authorization-server", "openid-configuration"]
         .iter()
-        .map(|name| well_known_url(issuer_url, name))
+        .flat_map(|name| well_known_candidates(issuer_url, name))
         .collect();
-
-    if has_path {
-        for name in &well_known_names {
-            candidates.push(format!(
-                "{}{}/.well-known/{name}",
-                parts.scheme, parts.authority
-            ));
-        }
-    }
 
     let mut last_err = OAuthError::Other("no candidates".into());
     for url in &candidates {
@@ -263,6 +273,23 @@ mod tests {
     )]
     fn well_known_url_construction(base: &str, name: &str, expected: &str) {
         assert_eq!(well_known_url(base, name), expected);
+    }
+
+    #[test_case(
+        "https://example.com", "oauth-protected-resource",
+        vec!["https://example.com/.well-known/oauth-protected-resource"]
+        ; "root_only_when_no_path"
+    )]
+    #[test_case(
+        "https://mcp.example.com/mcp", "oauth-protected-resource",
+        vec![
+            "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+            "https://mcp.example.com/.well-known/oauth-protected-resource",
+        ]
+        ; "path_then_root"
+    )]
+    fn well_known_candidate_order(base: &str, name: &str, expected: Vec<&str>) {
+        assert_eq!(well_known_candidates(base, name), expected);
     }
 
     #[test_case("https://example.com/token",   true  ; "https_valid")]
