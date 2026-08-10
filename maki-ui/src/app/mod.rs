@@ -79,11 +79,10 @@ use session::Sent;
 pub(crate) use session::session_has_content;
 use session_state::SessionState;
 
-const CANCEL_MSG: &str = "Cancelled.";
 /// Bypasses the per-run staleness filter because re-bake replies
 /// don't belong to any real agent run.
 pub(crate) const RESTORE_RUN_ID: u64 = u64::MAX;
-const FLASH_CANCEL: &str = "Press esc again to stop...";
+const FLASH_CANCEL: &str = "Press esc again to cancel...";
 const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
@@ -976,7 +975,7 @@ impl App {
             chat.cancel_in_progress();
         }
         self.main_chat()
-            .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
+            .push(DisplayMessage::new(DisplayRole::Error, CANCELLED_TEXT.into()));
         self.queue.clear();
         self.recoverable_queue.clear();
         self.status = Status::Idle;

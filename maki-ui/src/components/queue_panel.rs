@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use crate::components::keybindings::key;
 use crate::theme;
+use crate::components::marker::State;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -30,7 +31,8 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
     if entries.is_empty() {
         return;
     }
-    let content_width = area.width.saturating_sub(2) as usize;
+    let marker = State::Queued.glyph_span(0);
+    let content_width = (area.width as usize).saturating_sub(2 + marker.width());
     let lines: Vec<Line> = entries
         .iter()
         .enumerate()
@@ -46,7 +48,9 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
             } else {
                 (Style::new().fg(entry.color), ("", "", ""))
             };
-            truncate_line(&flat, content_width, style, hint_parts)
+            let mut line = truncate_line(&flat, content_width, style, hint_parts);
+            line.spans.insert(0, marker.clone());
+            line
         })
         .collect();
 

@@ -40,10 +40,10 @@ local RESETTLE_FMT = "batch: child %s settled twice (%s -> %s)"
 local STATUS = { PENDING = "pending", RUNNING = "running", SUCCESS = "success", ERROR = "error" }
 local TERMINAL = { [STATUS.SUCCESS] = true, [STATUS.ERROR] = true }
 local INDICATOR = {
-  [STATUS.PENDING] = { "○ ", "dim" },
+  [STATUS.PENDING] = { "◌ ", "queue" },
   [STATUS.RUNNING] = { "· ", "spinner" },
-  [STATUS.SUCCESS] = { "● ", "tool_success" },
-  [STATUS.ERROR] = { "● ", "tool_error" },
+  [STATUS.SUCCESS] = { "✔ ", "tool_success" },
+  [STATUS.ERROR] = { "✘ failed ", "tool_error" },
 }
 
 local description = string.format(

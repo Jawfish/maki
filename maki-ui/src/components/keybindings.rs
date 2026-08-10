@@ -333,7 +333,7 @@ pub const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         label: KeyLabel::Alt(key::NEXT_CHAT.label, key::PREV_CHAT.label),
-        description: "Next / previous task chat",
+        description: "Next / previous task session",
         context: KeybindContext::General,
         platform: Platform::All,
     },

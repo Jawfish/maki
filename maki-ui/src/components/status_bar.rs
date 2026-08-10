@@ -14,6 +14,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use crate::components::marker::State;
 use ratatui::widgets::Paragraph;
 
 const FAST_LABEL: &str = " [fast]";
@@ -106,8 +107,8 @@ impl StatusBar {
         let mut left_spans = Vec::new();
 
         if *ctx.status == Status::Streaming {
-            let ch = spinner_frame(self.started_at.elapsed().as_millis());
-            left_spans.push(Span::styled(format!(" {ch}"), theme::current().spinner));
+            left_spans.push(Span::raw(" "));
+            left_spans.extend(State::Running.label_spans(self.started_at.elapsed().as_millis()));
         }
 
         if ctx.restoring {
@@ -140,6 +141,11 @@ impl StatusBar {
             ));
         }
 
+        if ctx.retry_info.is_some() {
+            left_spans.push(Span::raw(" "));
+            left_spans.extend(State::NeedsAttention.label_spans(0));
+        }
+
         if let Some(retry) = ctx.retry_info {
             let secs = retry
                 .deadline
@@ -159,6 +165,8 @@ impl StatusBar {
 
         match ctx.status {
             Status::Error { message: e, .. } => {
+                left_spans.push(Span::raw(" "));
+                left_spans.extend(State::Failed.label_spans(0));
                 left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
             }
             _ => {

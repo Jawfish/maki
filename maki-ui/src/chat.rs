@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::components::messages::{MessagesPanel, PromptProgress};
 use crate::components::tool_display::append_annotation;
+use crate::components::marker::State;
 use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
 
@@ -20,9 +21,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-pub(crate) const DONE_TEXT: &str = "Done!";
-pub(crate) const ERROR_TEXT: &str = "Error";
-pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
+pub(crate) const DONE_TEXT: &str = State::Done.label();
+pub(crate) const ERROR_TEXT: &str = State::Failed.label();
+pub(crate) const CANCELLED_TEXT: &str = State::Cancelled.label();
 
 pub enum ChatEventResult {
     Continue,

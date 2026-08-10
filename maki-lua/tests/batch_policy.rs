@@ -52,6 +52,8 @@ const BATCH_RESULT_TIMEOUT: Duration = Duration::from_secs(10);
 const SPINNER_STYLE: &str = "spinner";
 const ERROR_STYLE: &str = "tool_error";
 const SUCCESS_STYLE: &str = "tool_success";
+const DONE_MARKER: &str = "✔ ";
+const FAILED_MARKER: &str = "✘ failed ";
 
 /// `maki.agent.call_tool` is stubbed; `maki.async.gather` and the semaphore
 /// stay real, so the park/release pair proves children genuinely overlap.
@@ -684,7 +686,7 @@ fn restore_with_state_renders_child_header_contract() {
     let header = &lines[0];
     assert_eq!(
         header[0],
-        ("● ".to_owned(), SpanStyle::Named("tool_success".to_owned()))
+        (DONE_MARKER.to_owned(), SpanStyle::Named("tool_success".to_owned()))
     );
     assert_eq!(
         header[1],
@@ -708,7 +710,7 @@ fn restore_with_state_renders_child_header_contract() {
     assert!(text.contains("line two"), "body from state: {text}");
 }
 
-/// Errors render like standalone: red `●` indicator and the plain body,
+/// Errors render like standalone: the failed marker and the plain body,
 /// without the llm-only `[ERROR]` prefix or a red body.
 #[test]
 fn restore_error_child_renders_error_style() {
@@ -723,7 +725,7 @@ fn restore_error_child_renders_error_style() {
     );
     assert_eq!(
         lines[0][0],
-        ("● ".to_owned(), SpanStyle::Named("tool_error".to_owned()))
+        (FAILED_MARKER.to_owned(), SpanStyle::Named("tool_error".to_owned()))
     );
     let text = lines_text(&lines);
     assert!(text.contains("it broke"), "got: {text}");

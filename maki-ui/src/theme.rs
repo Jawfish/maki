@@ -356,6 +356,8 @@ pub fn style_by_name(name: &str) -> Style {
         "warning" | "todo_in_progress" => t.todo_in_progress,
         "todo_pending" | "pending" => t.todo_pending,
         "todo_cancelled" | "cancelled" => t.todo_cancelled,
+        "queue" => t.queue,
+        "status_notice" => t.status_notice,
         _ => Style::default(),
     }
 }

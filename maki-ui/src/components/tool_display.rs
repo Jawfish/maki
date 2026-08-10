@@ -1,7 +1,8 @@
 use super::{DisplayMessage, ToolStatus};
 
 use super::code_view;
-use crate::animation::{spinner_frame, spinner_str};
+use crate::animation::spinner_str;
+use crate::components::marker::State;
 use crate::theme;
 use code_view::RenderLimits;
 use code_view::SectionFlags;
@@ -32,7 +33,6 @@ pub struct RenderCtx<'a> {
     pub tool_output_lines: &'a ToolOutputLines,
 }
 
-pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_BODY_INDENT: &str = "  ";
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
@@ -217,22 +217,6 @@ pub fn append_right_info(
     }
 }
 
-enum Indicator {
-    InProgress,
-    Success,
-    Error,
-}
-
-impl From<ToolStatus> for Indicator {
-    fn from(s: ToolStatus) -> Self {
-        match s {
-            ToolStatus::InProgress => Self::InProgress,
-            ToolStatus::Success => Self::Success,
-            ToolStatus::Error => Self::Error,
-        }
-    }
-}
-
 struct ResolvedOutput<'a> {
     text: Option<Cow<'a, str>>,
     full_text: Option<Cow<'a, str>>,
@@ -383,27 +367,25 @@ impl ToolLineBuilder {
         self.search_text.push_str(text);
     }
 
-    fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
+    fn prepend_indicator(&mut self, state: State, started_at: Instant) {
         if self.lines.is_empty() {
             return;
         }
-        let (text, style) = match indicator {
-            Indicator::InProgress => {
-                let ch = spinner_frame(started_at.elapsed().as_millis());
-                (format!("{ch} "), theme::current().spinner)
-            }
-            Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
-            Indicator::Error => (TOOL_INDICATOR.into(), theme::current().tool_error),
+        let text = match state {
+            State::Failed => format!("{} ", state.label()),
+            _ => state.glyph_text(started_at.elapsed().as_millis()),
         };
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {
                 *span += 1;
             }
         }
-        if matches!(indicator, Indicator::InProgress) {
+        if state == State::Running {
             self.spinner_lines.push((0, 0));
         }
-        self.lines[0].spans.insert(0, Span::styled(text, style));
+        self.lines[0]
+            .spans
+            .insert(0, Span::styled(text, state.style()));
     }
 
     fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
@@ -730,7 +712,7 @@ pub fn build_instructions_lines(
     };
     let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
     b.push_header("load", header, annotation.as_deref(), None);
-    b.prepend_indicator(Indicator::Success, Instant::now());
+    b.prepend_indicator(State::Done, Instant::now());
 
     let start = b.lines.len();
     let has_truncation =
